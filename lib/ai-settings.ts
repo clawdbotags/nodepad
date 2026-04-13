@@ -86,19 +86,19 @@ export const AI_MODELS: AIModel[] = [
     description: "Fast, excellent structured outputs",
     supportsGrounding: false,
   },
-  // ── Free tier (no credits required, ~200 req/day limit) ─────────────────
+  // -- Free tier (no credits required, ~200 req/day limit) --------------------
   {
     id: "nvidia/nemotron-3-nano-30b-a3b:free",
-    label: "Nemotron 30B · Free",
+    label: "Nemotron 30B - Free",
     shortLabel: "Nemotron",
-    description: "Free · no credits · ~200 req/day · Nvidia-hosted",
+    description: "Free - no credits - ~200 req/day - Nvidia-hosted",
     supportsGrounding: false,
   },
   {
     id: "nvidia/nemotron-3-super-120b-a12b:free",
-    label: "Nemotron 120B · Free",
+    label: "Nemotron 120B - Free",
     shortLabel: "Nemotron",
-    description: "Free · no credits · ~200 req/day · Nvidia-hosted · MoE",
+    description: "Free - no credits - ~200 req/day - Nvidia-hosted - MoE",
     supportsGrounding: false,
   },
 ]
@@ -193,19 +193,19 @@ export interface AISettings {
   providerKeys?: Partial<Record<AIProvider, string>>
 }
 
-const STORAGE_KEY = "nodepad-ai-settings"
+// ── Module-level cache for synchronous access (populated by useAISettings hook) ──
 
+let _settingsCache: AISettings = {
+  apiKey: "",
+  modelId: DEFAULT_MODEL_ID,
+  webGrounding: false,
+  provider: DEFAULT_PROVIDER,
+  customBaseUrl: "",
+}
+
+/** Synchronous settings read from module cache. Returns defaults until first fetch completes. */
 function loadSettings(): AISettings {
-  if (typeof window === "undefined") {
-    return { apiKey: "", modelId: DEFAULT_MODEL_ID, webGrounding: false, provider: DEFAULT_PROVIDER, customBaseUrl: "" }
-  }
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { apiKey: "", modelId: DEFAULT_MODEL_ID, webGrounding: false, provider: DEFAULT_PROVIDER, customBaseUrl: "" }
-    return { apiKey: "", modelId: DEFAULT_MODEL_ID, webGrounding: false, provider: DEFAULT_PROVIDER, customBaseUrl: "", ...JSON.parse(raw) }
-  } catch {
-    return { apiKey: "", modelId: DEFAULT_MODEL_ID, webGrounding: false, provider: DEFAULT_PROVIDER, customBaseUrl: "" }
-  }
+  return { ..._settingsCache }
 }
 
 export interface AIConfig {
@@ -221,12 +221,7 @@ export function loadAIConfig(): AIConfig | null {
   if (!s.apiKey) return null
   const models = getModelsForProvider(s.provider)
   const model = models.find(m => m.id === s.modelId)
-  // Use the matched model's id if found; otherwise fall back to the first model
-  // for this provider.  This handles the case where localStorage still holds an
-  // OpenRouter-prefixed id (e.g. "openai/gpt-4o") after switching to OpenAI —
-  // that string won't match any entry in OPENAI_MODELS so we fall back to "gpt-4o".
   const modelId = model?.id ?? models[0]?.id ?? s.modelId ?? DEFAULT_MODEL_ID
-  // Z.ai does not support grounding; only openrouter and openai do
   const supportsGrounding =
     (s.provider === "openrouter" || s.provider === "openai") &&
     s.webGrounding &&
@@ -250,7 +245,7 @@ export function getProviderHeaders(config: AIConfig): Record<string, string> {
   return base
 }
 
-/** @deprecated Use loadAIConfig() for direct browser → provider calls.
+/** @deprecated Use loadAIConfig() for direct browser -> provider calls.
  *  Kept for any remaining server-route usage during transition. */
 export function getAIHeaders(): Record<string, string> {
   const config = loadAIConfig()
@@ -264,11 +259,59 @@ export function getAIHeaders(): Record<string, string> {
   }
 }
 
+// ── Helper: fetch settings from API and populate module cache ────────────────
+
+async function fetchSettingsFromAPI(): Promise<AISettings> {
+  try {
+    const res = await fetch("/api/settings")
+    if (!res.ok) throw new Error(`Settings API returned ${res.status}`)
+    const data = await res.json()
+
+    const settings: AISettings = {
+      apiKey: data.apiKey ?? "",
+      modelId: data.modelId ?? DEFAULT_MODEL_ID,
+      webGrounding: data.webGrounding === "true" || data.webGrounding === true,
+      provider: (data.provider as AIProvider) ?? DEFAULT_PROVIDER,
+      customBaseUrl: data.customBaseUrl ?? "",
+      providerKeys: data.providerKeys ? JSON.parse(data.providerKeys) : undefined,
+    }
+
+    // Update module-level cache so synchronous loadAIConfig() stays fresh
+    _settingsCache = settings
+    return settings
+  } catch (e) {
+    console.error("Failed to fetch settings from API:", e)
+    return { ..._settingsCache }
+  }
+}
+
+async function saveSettingToAPI(key: string, value: string): Promise<void> {
+  try {
+    await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    })
+  } catch (e) {
+    console.error("Failed to save setting:", key, e)
+  }
+}
+
+async function persistAllSettings(settings: AISettings): Promise<void> {
+  const entries: [string, string][] = [
+    ["apiKey", settings.apiKey],
+    ["modelId", settings.modelId],
+    ["webGrounding", String(settings.webGrounding)],
+    ["provider", settings.provider],
+    ["customBaseUrl", settings.customBaseUrl],
+  ]
+  if (settings.providerKeys) {
+    entries.push(["providerKeys", JSON.stringify(settings.providerKeys)])
+  }
+  await Promise.all(entries.map(([k, v]) => saveSettingToAPI(k, v)))
+}
+
 export function useAISettings() {
-  // Always start with the SSR-safe default so server and client render identically.
-  // Load the real localStorage value after mount to avoid hydration mismatches
-  // caused by settings.apiKey toggling conditional DOM blocks (API key banner,
-  // modelLabel prop, etc.) between the server render and client hydration.
   const [settings, setSettings] = useState<AISettings>({
     apiKey: "", modelId: DEFAULT_MODEL_ID, webGrounding: false,
     provider: DEFAULT_PROVIDER, customBaseUrl: "",
@@ -276,14 +319,19 @@ export function useAISettings() {
   const [isHydrated, setIsHydrated] = useState(false)
 
   useEffect(() => {
-    setSettings(loadSettings())
-    setIsHydrated(true)
+    fetchSettingsFromAPI().then(s => {
+      setSettings(s)
+      setIsHydrated(true)
+    })
   }, [])
 
   const updateSettings = useCallback((patch: Partial<AISettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+      // Update module-level cache immediately for synchronous consumers
+      _settingsCache = next
+      // Persist to API (fire-and-forget)
+      persistAllSettings(next)
       return next
     })
   }, [])
