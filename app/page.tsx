@@ -19,6 +19,8 @@ import { generateGhostClient } from "@/lib/ai-ghost"
 import { exportToMarkdown, downloadMarkdown, copyToClipboard } from "@/lib/export"
 import { downloadNodepadFile, parseNodepadFile, NodepadParseError } from "@/lib/nodepad-format"
 import { detectContentType } from "@/lib/detect-content-type"
+import { splitTextClient } from "@/lib/ai-split"
+import { SplitConfirm } from "@/components/split-confirm"
 
 function generateId() {
   return Math.random().toString(36).substring(2, 10)
@@ -52,6 +54,10 @@ export default function Page() {
   const [isIntroOpen, setIsIntroOpen] = useState(false)
   const [showHelpTooltip, setShowHelpTooltip] = useState(false)
   const helpTooltipTimer = useRef<NodeJS.Timeout | null>(null)
+
+  // ── Smart split state ──────────────────────────────────────────────────────
+  const [splitPendingText, setSplitPendingText] = useState<string | null>(null)
+  const [isSplitting, setIsSplitting] = useState(false)
   const { settings, updateSettings, resolvedModelId, currentModel, isHydrated } = useAISettings()
   const debounceTimers = useRef<Record<string, Record<string, NodeJS.Timeout>>>({})
 
@@ -612,8 +618,66 @@ export default function Page() {
       setIsCommandKOpen(false)
       enrichBlock(activeProjectId, newId, resolvedText, undefined, enrichForcedType).catch(console.error)
     },
-    [activeProjectId, pushHistory, updateActiveProject, enrichBlock]
+    [activeProjectId, pushHistory, updateActiveProject, enrichBlock, setIsCommandKOpen]
   )
+
+  // ── Smart split: detect multi-item input and offer to split ───────────────
+
+  const looksLikeMultiItem = useCallback((text: string): boolean => {
+    const lines = text.split("\n").filter(l => l.trim().length > 0)
+    if (lines.length >= 3) return true
+    // Bullet/numbered list patterns
+    const listPattern = /^[\s]*[-•*·]\s|^[\s]*\d+[.)]\s/m
+    const listMatches = text.match(new RegExp(listPattern.source, "gm"))
+    if (listMatches && listMatches.length >= 2) return true
+    // Very long single-line text with semicolons or multiple sentences
+    if (text.length > 300 && (text.split(/[;.]/).length >= 3)) return true
+    return false
+  }, [])
+
+  const handleSubmit = useCallback(
+    (text: string, forcedType?: ContentType) => {
+      if (!settings.apiKey) {
+        // No API key — skip split detection, just add normally
+        addBlock(text, forcedType)
+        return
+      }
+      if (looksLikeMultiItem(text)) {
+        setSplitPendingText(text)
+      } else {
+        addBlock(text, forcedType)
+      }
+    },
+    [addBlock, looksLikeMultiItem, settings.apiKey]
+  )
+
+  const handleSplitConfirm = useCallback(async () => {
+    if (!splitPendingText) return
+    setIsSplitting(true)
+    try {
+      const items = await splitTextClient(splitPendingText)
+      for (const item of items) {
+        addBlock(item)
+      }
+    } catch (err) {
+      console.error("Split failed, adding as single block:", err)
+      addBlock(splitPendingText)
+    } finally {
+      setIsSplitting(false)
+      setSplitPendingText(null)
+    }
+  }, [splitPendingText, addBlock])
+
+  const handleSplitKeepSingle = useCallback(() => {
+    if (splitPendingText) {
+      addBlock(splitPendingText)
+    }
+    setSplitPendingText(null)
+  }, [splitPendingText, addBlock])
+
+  const handleSplitCancel = useCallback(() => {
+    setSplitPendingText(null)
+  }, [])
 
   const deleteBlock = useCallback((id: string) => {
     pushHistory(activeProjectId, blocksRef.current)
@@ -978,10 +1042,20 @@ export default function Page() {
         </AnimatePresence>
 
         <VimInput
-          onSubmit={addBlock}
+          onSubmit={handleSubmit}
           onCommand={handleCommand}
           isCommandKOpen={isCommandKOpen}
           setIsCommandKOpen={setIsCommandKOpen}
+        />
+
+        {/* Smart split confirmation modal */}
+        <SplitConfirm
+          open={splitPendingText !== null}
+          text={splitPendingText ?? ""}
+          isSplitting={isSplitting}
+          onSplit={handleSplitConfirm}
+          onKeepSingle={handleSplitKeepSingle}
+          onCancel={handleSplitCancel}
         />
       </div>
 
