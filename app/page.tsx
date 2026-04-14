@@ -133,15 +133,17 @@ export default function Page() {
   // ── Create block via bottom input ────────────────────────────────────────
   const createBlock = useCallback(async (text: string) => {
     if (!activeSessionId || !text.trim()) return
-    // Position: random-ish spread in visible area
-    const x = 100 + Math.random() * 500
-    const y = 100 + Math.random() * 300
+    // Stagger positions so new blocks don't overlap
+    const idx = blocks.length
+    const cols = 4
+    const x = 100 + (idx % cols) * 220
+    const y = 100 + Math.floor(idx / cols) * 120
     const n: Block = await api(`/api/sessions/${activeSessionId}/notes`, {
       method: "POST",
       body: JSON.stringify({ text, x, y }),
     })
     setBlocks(prev => [...prev, n])
-  }, [activeSessionId])
+  }, [activeSessionId, blocks.length])
 
   // ── Delete selected blocks ───────────────────────────────────────────────
   const deleteSelected = useCallback(async () => {
