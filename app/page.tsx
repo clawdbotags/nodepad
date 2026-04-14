@@ -19,6 +19,8 @@ import { generateGhostClient } from "@/lib/ai-ghost"
 import { exportToMarkdown, downloadMarkdown, copyToClipboard } from "@/lib/export"
 import { downloadNodepadFile, parseNodepadFile, NodepadParseError } from "@/lib/nodepad-format"
 import { detectContentType } from "@/lib/detect-content-type"
+import { splitTextClient } from "@/lib/ai-split"
+import { SplitConfirm } from "@/components/split-confirm"
 
 function generateId() {
   return Math.random().toString(36).substring(2, 10)
@@ -52,6 +54,10 @@ export default function Page() {
   const [isIntroOpen, setIsIntroOpen] = useState(false)
   const [showHelpTooltip, setShowHelpTooltip] = useState(false)
   const helpTooltipTimer = useRef<NodeJS.Timeout | null>(null)
+
+  // ── Smart split state ──────────────────────────────────────────────────────
+  const [splitPendingText, setSplitPendingText] = useState<string | null>(null)
+  const [isSplitting, setIsSplitting] = useState(false)
   const { settings, updateSettings, resolvedModelId, currentModel, isHydrated } = useAISettings()
   const debounceTimers = useRef<Record<string, Record<string, NodeJS.Timeout>>>({})
 
@@ -128,89 +134,103 @@ export default function Page() {
     prevActiveProjectId.current = activeProjectId
   }, [activeProjectId])
 
-  // 1. Persistence: Initial Load & Migration
+  // ── Helper: convert DB note row to client TextBlock ─────────────────────
+  const noteRowToBlock = useCallback((row: any): TextBlock => ({
+    id: row.id,
+    text: row.text,
+    timestamp: row.created_at,
+    contentType: row.content_type as ContentType,
+    category: row.category ?? undefined,
+    annotation: row.annotation ?? undefined,
+    influencedBy: row.influenced_by ? JSON.parse(row.influenced_by) : undefined,
+    isUnrelated: row.is_unrelated === 1,
+    sources: row.sources ? JSON.parse(row.sources) : undefined,
+    isEnriching: row.is_enriching === 1,
+  }), [])
+
+  // 1. Persistence: Initial Load from SQLite API
   useEffect(() => {
-    const savedProjects = localStorage.getItem("nodepad-projects")
-    const savedActiveId = localStorage.getItem("nodepad-active-project")
-    
-    const oldBlocks = localStorage.getItem("nodepad-blocks")
-    const oldCollapsed = localStorage.getItem("nodepad-collapsed")
-
-    let initialProjects: Project[] = []
-    let initialActiveId = ""
-
-    const backupProjects = localStorage.getItem("nodepad-backup")
-
-    if (savedProjects) {
+    async function loadFromAPI() {
       try {
-        initialProjects = JSON.parse(savedProjects)
-        initialActiveId = savedActiveId || initialProjects[0]?.id || ""
-      } catch (e) {
-        console.error("Failed to parse saved projects — trying backup", e)
-        // Fall through to backup attempt below
-      }
-    }
+        const res = await fetch("/api/projects")
+        if (!res.ok) throw new Error(`Projects API returned ${res.status}`)
+        const dbProjects = await res.json()
 
-    // Fallback: restore from silent backup if primary key was absent or corrupt
-    if (initialProjects.length === 0 && backupProjects) {
-      try {
-        initialProjects = JSON.parse(backupProjects)
-        initialActiveId = initialProjects[0]?.id || ""
-        console.info("Restored from nodepad-backup")
-      } catch (e) {
-        console.error("Backup restore also failed", e)
-      }
-    }
+        if (dbProjects.length === 0) {
+          // No projects in DB — create a default one
+          const defaultId = generateId()
+          await fetch("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: defaultId, name: "Default Space" }),
+          })
+          const defaultProject: Project = {
+            id: defaultId,
+            name: "Default Space",
+            blocks: [],
+            collapsedIds: [],
+            ghostNotes: [],
+          }
+          setProjects([defaultProject])
+          setActiveProjectId(defaultId)
+        } else {
+          // Load first project with its notes
+          const firstProject = dbProjects[0]
+          const detailRes = await fetch(`/api/projects/${firstProject.id}`)
+          const detail = await detailRes.json()
+          const notes = (detail.notes || [])
+            .filter((n: any) => n.is_ghost === 0)
+          const ghostRows = (detail.notes || [])
+            .filter((n: any) => n.is_ghost === 1)
 
-    if (initialProjects.length === 0 && oldBlocks) {
-      try {
-        const blks = JSON.parse(oldBlocks)
-        const collapsed = oldCollapsed ? JSON.parse(oldCollapsed) : []
-        const defaultProject: Project = {
-          id: "default",
-          name: "Default Space",
-          blocks: blks,
-          collapsedIds: collapsed,
-          ghostNotes: [],
+          const loadedProjects: Project[] = dbProjects.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            blocks: p.id === firstProject.id ? notes.map(noteRowToBlock) : [],
+            collapsedIds: [],
+            ghostNotes: p.id === firstProject.id
+              ? ghostRows.map((r: any) => ({ id: r.id, text: r.text, category: r.category || "thesis", isGenerating: false }))
+              : [],
+          }))
+
+          setProjects(loadedProjects)
+          setActiveProjectId(firstProject.id)
+
+          // Load notes for remaining projects in background
+          for (const p of dbProjects.slice(1)) {
+            fetch(`/api/projects/${p.id}`)
+              .then(r => r.json())
+              .then(d => {
+                const pNotes = (d.notes || []).filter((n: any) => n.is_ghost === 0)
+                const pGhosts = (d.notes || []).filter((n: any) => n.is_ghost === 1)
+                setProjects(prev => prev.map(proj =>
+                  proj.id === p.id
+                    ? {
+                        ...proj,
+                        blocks: pNotes.map(noteRowToBlock),
+                        ghostNotes: pGhosts.map((r: any) => ({ id: r.id, text: r.text, category: r.category || "thesis", isGenerating: false })),
+                      }
+                    : proj
+                ))
+              })
+              .catch(e => console.error(`Failed to load notes for project ${p.id}:`, e))
+          }
         }
-        initialProjects = [defaultProject]
-        initialActiveId = "default"
       } catch (e) {
-        console.error("Migration failed", e)
+        console.error("Failed to load from API, using defaults:", e)
+        setProjects(INITIAL_PROJECTS)
+        setActiveProjectId(INITIAL_PROJECTS[0].id)
+      }
+
+      setIsLoaded(true)
+
+      // Show intro modal on first visit (kept in localStorage — view state)
+      if (!localStorage.getItem("nodepad-intro-seen")) {
+        setIsIntroOpen(true)
       }
     }
-
-    if (initialProjects.length === 0) {
-      initialProjects = INITIAL_PROJECTS
-      initialActiveId = INITIAL_PROJECTS[0].id
-    }
-
-    setProjects(initialProjects)
-    setActiveProjectId(initialActiveId)
-    setIsLoaded(true)
-
-    // Show intro modal on first visit
-    if (!localStorage.getItem("nodepad-intro-seen")) {
-      setIsIntroOpen(true)
-    }
-
-  }, [])
-
-  // 2. Persistence: Save on Change
-  useEffect(() => {
-    if (!isLoaded) return
-    localStorage.setItem("nodepad-projects", JSON.stringify(projects))
-    localStorage.setItem("nodepad-active-project", activeProjectId)
-  }, [projects, activeProjectId, isLoaded])
-
-  // 3. Silent rolling backup — written on every change, separate key.
-  //    If nodepad-projects is ever wiped, the load effect can fall back to this.
-  useEffect(() => {
-    if (!isLoaded || projects.length === 0) return
-    try {
-      localStorage.setItem("nodepad-backup", JSON.stringify(projects))
-    } catch { /* quota exceeded — skip silently */ }
-  }, [projects, isLoaded])
+    loadFromAPI()
+  }, [noteRowToBlock])
 
   // Hidden file input for .nodepad import — triggered from sidebar or ⌘K
   const importInputRef = useRef<HTMLInputElement>(null)
@@ -227,6 +247,32 @@ export default function Page() {
         setProjects(prev => [...prev, imported])
         setActiveProjectId(imported.id)
         setIsSidebarOpen(false)
+
+        // Persist imported project and notes to SQLite
+        fetch("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: imported.id, name: imported.name }),
+        }).then(() => {
+          // Persist all notes
+          for (const block of imported.blocks) {
+            fetch(`/api/projects/${imported.id}/notes`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                id: block.id,
+                text: block.text,
+                content_type: block.contentType,
+                category: block.category,
+                annotation: block.annotation,
+                influenced_by: block.influencedBy,
+                is_unrelated: block.isUnrelated,
+                sources: block.sources,
+                created_at: block.timestamp,
+              }),
+            }).catch(e => console.error("Failed to persist imported note:", e))
+          }
+        }).catch(e => console.error("Failed to persist imported project:", e))
       } catch (err) {
         if (err instanceof NodepadParseError) {
           alert(err.message)
@@ -357,6 +403,20 @@ export default function Page() {
           lastGhostTexts: [...(p.lastGhostTexts || []), data.text].slice(-10),
         }
       }))
+
+      // Persist ghost note to SQLite
+      fetch(`/api/projects/${projectId}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: ghostId,
+          text: data.text,
+          content_type: "thesis",
+          category: data.category,
+          is_ghost: true,
+          created_at: Date.now(),
+        }),
+      }).catch(e => console.error("Failed to persist ghost note:", e))
     } catch (e) {
       console.error("Ghost note generation failed", e)
       setProjects(prev => prev.map(p => p.id === projectId
@@ -490,6 +550,47 @@ export default function Page() {
         })
       })
 
+      // Persist enrichment results to SQLite
+      const enrichmentFields: any = {
+        content_type: data.contentType,
+        category: data.category,
+        annotation: data.annotation,
+        influenced_by: influencedBy.length > 0 ? influencedBy : null,
+        is_unrelated: data.isUnrelated,
+        sources: data.sources ?? null,
+        is_enriching: false,
+      }
+      const mergeTargetIdx2 = data.mergeWithIndex
+      const mergeTargetId2 = mergeTargetIdx2 !== null && context[mergeTargetIdx2] ? context[mergeTargetIdx2].id : null
+      if (mergeTargetId2) {
+        // Note was merged — delete the original, update the target
+        fetch(`/api/notes/${id}`, { method: "DELETE" }).catch(e => console.error("Failed to delete merged note:", e))
+        fetch(`/api/notes/${mergeTargetId2}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...enrichmentFields, text: text }),
+        }).catch(e => console.error("Failed to persist merge target:", e))
+      } else if (data.contentType === "task") {
+        // Task merging — the original note may be deleted
+        const targetProject2 = projectsRef.current.find(p => p.id === projectId)
+        const existingTask2 = targetProject2?.blocks.find(b => b.contentType === "task" && b.id !== id)
+        if (existingTask2) {
+          fetch(`/api/notes/${id}`, { method: "DELETE" }).catch(e => console.error("Failed to delete task-merged note:", e))
+        } else {
+          fetch(`/api/notes/${id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(enrichmentFields),
+          }).catch(e => console.error("Failed to persist enrichment:", e))
+        }
+      } else {
+        fetch(`/api/notes/${id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(enrichmentFields),
+        }).catch(e => console.error("Failed to persist enrichment:", e))
+      }
+
       setTimeout(() => generateGhostNote(projectId), 2500)
     } catch (e: any) {
       console.warn(e)
@@ -507,6 +608,7 @@ export default function Page() {
     if (!note || note.isGenerating) return
     const newId = generateId()
     const { text, category } = note
+    const timestamp = Date.now()
 
     updateActiveProject(p => {
       const updatedProject = {
@@ -514,7 +616,7 @@ export default function Page() {
         blocks: [...p.blocks, {
           id: newId,
           text,
-          timestamp: Date.now(),
+          timestamp,
           contentType: "thesis" as ContentType,
           category,
           isEnriching: true
@@ -524,13 +626,31 @@ export default function Page() {
       enrichBlock(p.id, newId, text, category, "thesis")
       return updatedProject
     })
-  }, [activeProject, updateActiveProject, enrichBlock])
+
+    // Persist: delete ghost from DB, create solidified note
+    fetch(`/api/notes/${id}`, { method: "DELETE" }).catch(e => console.error("Failed to delete ghost:", e))
+    fetch(`/api/projects/${activeProjectId}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: newId,
+        text,
+        content_type: "thesis",
+        category,
+        is_enriching: true,
+        is_ghost: false,
+        created_at: timestamp,
+      }),
+    }).catch(e => console.error("Failed to persist claimed ghost:", e))
+  }, [activeProject, activeProjectId, updateActiveProject, enrichBlock])
 
   const dismissGhostNote = useCallback((id: string) => {
     updateActiveProject(p => ({
       ...p,
       ghostNotes: (p.ghostNotes || []).filter(n => n.id !== id),
     }))
+    // Delete ghost from DB
+    fetch(`/api/notes/${id}`, { method: "DELETE" }).catch(e => console.error("Failed to delete dismissed ghost:", e))
   }, [updateActiveProject])
 
   useEffect(() => {
@@ -597,23 +717,95 @@ export default function Page() {
       const initialDisplayType: ContentType = resolvedType
         ?? (HIGH_CONFIDENCE_TYPES.has(heuristicType) ? heuristicType : "general")
 
+      const timestamp = Date.now()
       pushHistory(activeProjectId, blocksRef.current)
       updateActiveProject(p => ({
         ...p,
         blocks: [...p.blocks, {
           id: newId,
           text: resolvedText,
-          timestamp: Date.now(),
+          timestamp,
           contentType: initialDisplayType,
           isEnriching: true,
         }]
       }))
 
+      // Persist to SQLite (fire-and-forget)
+      fetch(`/api/projects/${activeProjectId}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: newId,
+          text: resolvedText,
+          content_type: initialDisplayType,
+          is_enriching: true,
+          created_at: timestamp,
+        }),
+      }).catch(e => console.error("Failed to persist new note:", e))
+
       setIsCommandKOpen(false)
       enrichBlock(activeProjectId, newId, resolvedText, undefined, enrichForcedType).catch(console.error)
     },
-    [activeProjectId, pushHistory, updateActiveProject, enrichBlock]
+    [activeProjectId, pushHistory, updateActiveProject, enrichBlock, setIsCommandKOpen]
   )
+
+  // ── Smart split: detect multi-item input and offer to split ───────────────
+
+  const looksLikeMultiItem = useCallback((text: string): boolean => {
+    const lines = text.split("\n").filter(l => l.trim().length > 0)
+    if (lines.length >= 3) return true
+    // Bullet/numbered list patterns
+    const listPattern = /^[\s]*[-•*·]\s|^[\s]*\d+[.)]\s/m
+    const listMatches = text.match(new RegExp(listPattern.source, "gm"))
+    if (listMatches && listMatches.length >= 2) return true
+    // Very long single-line text with semicolons or multiple sentences
+    if (text.length > 300 && (text.split(/[;.]/).length >= 3)) return true
+    return false
+  }, [])
+
+  const handleSubmit = useCallback(
+    (text: string, forcedType?: ContentType) => {
+      if (!settings.apiKey) {
+        // No API key — skip split detection, just add normally
+        addBlock(text, forcedType)
+        return
+      }
+      if (looksLikeMultiItem(text)) {
+        setSplitPendingText(text)
+      } else {
+        addBlock(text, forcedType)
+      }
+    },
+    [addBlock, looksLikeMultiItem, settings.apiKey]
+  )
+
+  const handleSplitConfirm = useCallback(async () => {
+    if (!splitPendingText) return
+    setIsSplitting(true)
+    try {
+      const items = await splitTextClient(splitPendingText)
+      for (const item of items) {
+        addBlock(item)
+      }
+    } catch (err) {
+      console.error("Split failed, adding as single block:", err)
+      addBlock(splitPendingText)
+    } finally {
+      setIsSplitting(false)
+      setSplitPendingText(null)
+    }
+  }, [splitPendingText, addBlock])
+
+  const handleSplitKeepSingle = useCallback(() => {
+    if (splitPendingText) {
+      addBlock(splitPendingText)
+    }
+    setSplitPendingText(null)
+  }, [splitPendingText, addBlock])
+
+  const handleSplitCancel = useCallback(() => {
+    setSplitPendingText(null)
+  }, [])
 
   const deleteBlock = useCallback((id: string) => {
     pushHistory(activeProjectId, blocksRef.current)
@@ -621,6 +813,8 @@ export default function Page() {
       ...p,
       blocks: p.blocks.filter(b => b.id !== id)
     }))
+    // Persist to SQLite
+    fetch(`/api/notes/${id}`, { method: "DELETE" }).catch(e => console.error("Failed to delete note:", e))
   }, [activeProjectId, pushHistory, updateActiveProject])
 
   const editBlock = useCallback((id: string, newText: string) => {
@@ -652,6 +846,13 @@ export default function Page() {
         delete debounceTimers.current[activeProjectId][id]
       }, 800)
 
+      // Persist text change to SQLite
+      fetch(`/api/notes/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: newText, is_enriching: true }),
+      }).catch(e => console.error("Failed to persist note edit:", e))
+
       return prev.map(p => p.id === activeProjectId ? {
         ...p,
         blocks: p.blocks.map(b => b.id === id ? { ...b, text: newText, isEnriching: true, isError: false } : b)
@@ -676,6 +877,12 @@ export default function Page() {
       ...p,
       blocks: p.blocks.map(b => b.id === id ? { ...b, annotation: newAnnotation } : b)
     }))
+    // Persist to SQLite
+    fetch(`/api/notes/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ annotation: newAnnotation }),
+    }).catch(e => console.error("Failed to persist annotation:", e))
   }, [updateActiveProject])
 
   const toggleCollapse = useCallback((id: string) => {
@@ -692,6 +899,7 @@ export default function Page() {
       ...p,
       blocks: p.blocks.map(b => b.id === id ? { ...b, isPinned: !b.isPinned } : b)
     } : p))
+    // Note: isPinned is not in DB schema (view state), no API call needed
   }, [activeProjectId])
 
   const handleToggleSubTask = useCallback((blockId: string, subTaskId: string) => {
@@ -740,10 +948,22 @@ export default function Page() {
     }
     setProjects(prev => [...prev, newProject])
     setActiveProjectId(newProject.id)
+    // Persist to SQLite
+    fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: newProject.id, name: newProject.name }),
+    }).catch(e => console.error("Failed to persist project:", e))
   }, [])
 
   const renameProject = useCallback((id: string, newName: string) => {
     setProjects(prev => prev.map(p => p.id === id ? { ...p, name: newName } : p))
+    // Persist to SQLite
+    fetch(`/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName }),
+    }).catch(e => console.error("Failed to rename project:", e))
   }, [])
 
   const deleteProject = useCallback((id: string) => {
@@ -753,6 +973,8 @@ export default function Page() {
       if (activeProjectId === id) {
         setActiveProjectId(nextProjects[0].id)
       }
+      // Persist to SQLite (cascade deletes notes)
+      fetch(`/api/projects/${id}`, { method: "DELETE" }).catch(e => console.error("Failed to delete project:", e))
       return nextProjects
     })
   }, [activeProjectId])
@@ -978,10 +1200,20 @@ export default function Page() {
         </AnimatePresence>
 
         <VimInput
-          onSubmit={addBlock}
+          onSubmit={handleSubmit}
           onCommand={handleCommand}
           isCommandKOpen={isCommandKOpen}
           setIsCommandKOpen={setIsCommandKOpen}
+        />
+
+        {/* Smart split confirmation modal */}
+        <SplitConfirm
+          open={splitPendingText !== null}
+          text={splitPendingText ?? ""}
+          isSplitting={isSplitting}
+          onSplit={handleSplitConfirm}
+          onKeepSingle={handleSplitKeepSingle}
+          onCancel={handleSplitCancel}
         />
       </div>
 
