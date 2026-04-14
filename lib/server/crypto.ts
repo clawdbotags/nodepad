@@ -3,14 +3,10 @@ import fs from "fs"
 import path from "path"
 import os from "os"
 
-const KEYFILE_PATH = path.join(
-  os.homedir(),
-  ".openfang",
-  "apps",
-  "nodepad",
-  "data",
-  ".keyfile"
-)
+// Reuse v1 keyfile if present so encrypted settings imported from v1 can be
+// decrypted. Otherwise create a new keyfile in the v2 data dir.
+const V1_KEYFILE = path.join(os.homedir(), ".openfang", "apps", "nodepad", "data", ".keyfile")
+const V2_KEYFILE = path.join(os.homedir(), ".openfang", "apps", "nodepad-v2", "data", ".keyfile")
 
 const ALGORITHM = "aes-256-gcm"
 const IV_LENGTH = 12
@@ -20,16 +16,20 @@ let cachedKey: Buffer | null = null
 function getOrCreateKey(): Buffer {
   if (cachedKey) return cachedKey
 
-  if (fs.existsSync(KEYFILE_PATH)) {
-    cachedKey = fs.readFileSync(KEYFILE_PATH)
+  // Prefer v1 keyfile if it exists (so we can read v1's encrypted settings)
+  if (fs.existsSync(V1_KEYFILE)) {
+    cachedKey = fs.readFileSync(V1_KEYFILE)
+    return cachedKey
+  }
+  if (fs.existsSync(V2_KEYFILE)) {
+    cachedKey = fs.readFileSync(V2_KEYFILE)
     return cachedKey
   }
 
-  // Auto-create directory and keyfile
-  const dir = path.dirname(KEYFILE_PATH)
+  const dir = path.dirname(V2_KEYFILE)
   fs.mkdirSync(dir, { recursive: true })
   const key = crypto.randomBytes(32)
-  fs.writeFileSync(KEYFILE_PATH, key, { mode: 0o600 })
+  fs.writeFileSync(V2_KEYFILE, key, { mode: 0o600 })
   cachedKey = key
   return key
 }
@@ -58,7 +58,6 @@ export function decrypt(blob: string): string {
   return decrypted.toString("utf8")
 }
 
-/** Returns true if the setting key should be encrypted (contains apiKey, token, or key) */
 export function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase()
   return lower.includes("apikey") || lower.includes("token") || lower.includes("key")
