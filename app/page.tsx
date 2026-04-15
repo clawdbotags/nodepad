@@ -434,24 +434,30 @@ export default function Page() {
     zoomAt(1 / 1.2, rect.width / 2, rect.height / 2)
   }, [zoomAt])
 
-  // Wheel zoom (Ctrl+wheel / pinch) OR pan (plain wheel / two-finger scroll on trackpad / iPad).
-  // iPad Safari + desktop trackpads both emit wheel with deltaX/deltaY for two-finger drags.
-  const onCanvasWheel = useCallback((e: React.WheelEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
-    if (e.ctrlKey || e.metaKey) {
-      // pinch/zoom
+  // Wheel zoom + pan — attached as native non-passive listener so preventDefault()
+  // actually blocks page scroll on iPad Safari (React's onWheel is passive by default).
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    const handler = (e: WheelEvent) => {
       e.preventDefault()
-      const cx = e.clientX - rect.left
-      const cy = e.clientY - rect.top
-      const factor = Math.exp(-e.deltaY * 0.01)
-      zoomAt(factor, cx, cy)
-    } else {
-      // two-finger pan (iPad / trackpad)
-      e.preventDefault()
-      setViewport(v => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }))
+      const rect = el.getBoundingClientRect()
+      if (e.ctrlKey || e.metaKey) {
+        const cx = e.clientX - rect.left
+        const cy = e.clientY - rect.top
+        const factor = Math.exp(-e.deltaY * 0.01)
+        setViewport(v => {
+          const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, v.scale * factor))
+          const k = newScale / v.scale
+          return { scale: newScale, tx: cx - (cx - v.tx) * k, ty: cy - (cy - v.ty) * k }
+        })
+      } else {
+        setViewport(v => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }))
+      }
     }
-  }, [zoomAt])
+    el.addEventListener("wheel", handler, { passive: false })
+    return () => el.removeEventListener("wheel", handler)
+  }, [])
 
   // ── Double click block: edit ─────────────────────────────────────────────
   const onBlockDoubleClick = (e: React.MouseEvent, block: Block) => {
@@ -789,7 +795,6 @@ export default function Page() {
           onMouseDown={onCanvasMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
-          onWheel={onCanvasWheel}
           className="relative h-full w-full select-none touch-none"
           style={{ cursor: connectingFrom ? "crosshair" : panStateRef.current.active ? "grabbing" : "grab" }}
         >
