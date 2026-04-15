@@ -1195,7 +1195,7 @@ export default function Page() {
       {/* Main canvas area */}
       <main className="relative flex-1 overflow-hidden">
         {/* View toggle */}
-        <div className="absolute left-12 top-2 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
+        <div className="absolute left-12 bottom-20 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
           {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
             <button
               key={m}
