@@ -109,21 +109,21 @@ function TiledView({ blocks, connections, selectedIds, onSelect }: {
         >
           <div
             onClick={e => onSelect(b.id, e.ctrlKey || e.metaKey)}
-            className={`flex flex-col flex-1 overflow-hidden bg-neutral-900/80 transition-all cursor-pointer hover:bg-neutral-800/90 ${
-              isSel ? "ring-2 ring-blue-500" : ""
+            className={`flex flex-col flex-1 overflow-hidden bg-card/80 transition-all cursor-pointer hover:bg-card ${
+              isSel ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]" : ""
             }`}
             style={{
-              borderLeft: `3px solid ${isAI ? "#6366f1" : "#525252"}`,
+              borderLeft: `3px solid ${isAI ? "var(--primary)" : "rgba(255,255,255,0.08)"}`,
             }}
           >
-            <div className="flex-1 overflow-y-auto p-3">
-              <div className="whitespace-pre-wrap break-words text-sm text-neutral-100 leading-relaxed">
+            <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+              <div className="whitespace-pre-wrap break-words text-sm text-foreground/90 leading-relaxed">
                 {b.text}
               </div>
             </div>
-            <div className="flex items-center justify-between px-3 py-1.5 border-t border-white/5 text-[10px] text-neutral-500">
-              <span>{isAI ? "AI" : "user"}</span>
-              {connCount > 0 && <span>{connCount} connection{connCount !== 1 ? "s" : ""}</span>}
+            <div className="flex items-center justify-between px-3 py-1.5 border-t border-white/5 font-mono text-[8px] font-bold uppercase tracking-wider text-muted-foreground/40">
+              <span>{isAI ? "ai" : "user"}</span>
+              {connCount > 0 && <span>{connCount} link{connCount !== 1 ? "s" : ""}</span>}
             </div>
           </div>
         </div>
@@ -140,9 +140,9 @@ function TiledView({ blocks, connections, selectedIds, onSelect }: {
   }
 
   if (blocks.length === 0) {
-    return <div className="flex items-center justify-center h-full text-neutral-500 text-sm">No blocks</div>
+    return <div className="flex items-center justify-center h-full font-mono text-[10px] uppercase tracking-[0.35em] text-muted-foreground/35">No blocks</div>
   }
-  return <div className="flex h-full w-full overflow-hidden bg-neutral-950">{renderNode(tree)}</div>
+  return <div className="flex h-full w-full overflow-hidden bg-[#020202]">{renderNode(tree)}</div>
 }
 
 // ── Graph View (force-directed) ─────────────────────────────────────────────
@@ -249,11 +249,11 @@ function GraphView({ blocks, connections, selectedIds, onSelect }: {
   }, [hoveredId, connections])
 
   if (blocks.length === 0) {
-    return <div className="flex items-center justify-center h-full text-neutral-500 text-sm">No blocks</div>
+    return <div className="flex items-center justify-center h-full font-mono text-[10px] uppercase tracking-[0.35em] text-muted-foreground/35">No blocks</div>
   }
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-neutral-950">
+    <div className="relative h-full w-full overflow-hidden bg-[#020202]">
       <svg ref={svgRef} viewBox="0 0 800 600" className="w-full h-full" preserveAspectRatio="xMidYMid meet">
         {/* Edges */}
         {connections.map(c => {
@@ -265,15 +265,16 @@ function GraphView({ blocks, connections, selectedIds, onSelect }: {
             <g key={c.id}>
               <line
                 x1={from.x} y1={from.y} x2={to.x} y2={to.y}
-                stroke={dimmed ? "#333" : "#666"}
-                strokeWidth={1.5}
-                opacity={dimmed ? 0.3 : 0.8}
+                stroke="white"
+                strokeWidth={1.2}
+                opacity={dimmed ? 0.04 : 0.22}
+                style={{ transition: "opacity 0.15s" }}
               />
               {c.label && (
                 <text
                   x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 8}
-                  textAnchor="middle" fontSize={9} fill={dimmed ? "#444" : "#999"}
-                  opacity={dimmed ? 0.3 : 1}
+                  textAnchor="middle" fontSize={9} fontFamily="var(--font-mono)" fill={dimmed ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.45)"}
+                  style={{ transition: "fill 0.15s" }}
                 >
                   {c.label}
                 </text>
@@ -302,15 +303,16 @@ function GraphView({ blocks, connections, selectedIds, onSelect }: {
             >
               <circle
                 cx={pos.x} cy={pos.y} r={r}
-                fill={isAI ? "#4338ca" : "#262626"}
-                stroke={isSel ? "#3b82f6" : isAI ? "#6366f1" : "#525252"}
-                strokeWidth={isSel ? 3 : 1.5}
+                fill={isAI ? "var(--primary)" : "var(--card)"}
+                fillOpacity={0.9}
+                stroke={isSel ? "var(--primary)" : "rgba(255,255,255,0.15)"}
+                strokeWidth={isSel ? 2 : 1}
               />
               <text
                 x={pos.x} y={pos.y + r + 14}
-                textAnchor="middle" fontSize={10}
-                fill={dimmed ? "#333" : "#ccc"}
-                style={{ pointerEvents: "none", userSelect: "none" }}
+                textAnchor="middle" fontSize={10} fontFamily="var(--font-mono)"
+                fill={dimmed ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.55)"}
+                style={{ pointerEvents: "none", userSelect: "none", transition: "fill 0.15s" }}
               >
                 {label}
               </text>
@@ -1061,112 +1063,148 @@ export default function Page() {
   }, [blocks])
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-neutral-50 text-neutral-900">
-      {/* Sidebar toggle (always visible) */}
-      <button
-        data-testid="sidebar-toggle"
-        onClick={() => setSidebarOpen(v => !v)}
-        style={{ left: sidebarOpen ? "15rem" : "0.5rem" }}
-        className="absolute top-2 z-50 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs shadow hover:bg-neutral-100 transition-all duration-200"
-        title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-      >
-        {sidebarOpen ? "‹" : "›"}
-      </button>
+    <div className="relative flex h-screen w-screen overflow-hidden bg-[#020202] text-foreground">
       {/* Left Sidebar */}
       <aside
-        className={`flex h-full flex-col border-r border-neutral-200 bg-white transition-all duration-200 ${
-          sidebarOpen ? "w-60" : "w-0 overflow-hidden border-r-0"
-        }`}
+        style={{ width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }}
+        className="relative z-50 transition-all duration-200 ease-in-out overflow-hidden border-r border-border bg-black/20 backdrop-blur-3xl flex flex-col h-full"
       >
-        <div className="border-b border-neutral-200 p-3">
-          <button
-            data-testid="new-session"
-            onClick={newSession}
-            className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm text-white hover:bg-neutral-700"
-          >
-            + New canvas
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2">
-          {sessions.map(s => (
-            <div
-              key={s.id}
-              className={`mb-1 flex items-stretch rounded text-sm ${
-                s.id === activeSessionId ? "bg-neutral-200" : "hover:bg-neutral-100"
-              }`}
-            >
-              <button
-                data-testid={`session-item-${s.id}`}
-                onClick={() => setActiveSessionId(s.id)}
-                className="min-w-0 flex-1 truncate px-2 py-1.5 text-left"
-                title={s.name}
-              >
-                {s.name}
-              </button>
-              <button
-                data-testid={`session-delete-${s.id}`}
-                onClick={e => { e.stopPropagation(); deleteSession(s.id) }}
-                className="opacity-0 group-hover:opacity-100 hover:opacity-100 px-2 text-neutral-400 hover:text-red-600 transition-opacity"
-                title="Delete canvas"
-                style={{ opacity: 1 }}
-              >
-                ×
-              </button>
+        <div className="w-[240px] flex flex-col h-full">
+          {/* Sidebar Header */}
+          <div className="flex h-10 items-center justify-between border-b border-border bg-card/5 backdrop-blur-md px-3 py-1.5 shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="flex items-center gap-0.5">
+                <span className="inline-block h-2 w-2 rounded-sm bg-primary" />
+                <span className="inline-block h-2 w-2 rounded-sm bg-primary/60" />
+                <span className="inline-block h-2 w-2 rounded-sm bg-primary/30" />
+              </div>
+              <h2 className="font-mono text-xs font-bold uppercase tracking-tight text-foreground/80 select-none">
+                nodepad
+              </h2>
             </div>
-          ))}
-        </div>
-        <div className="border-t border-neutral-200 p-3 space-y-2">
-          <button
-            data-testid="augment-btn"
-            disabled={!activeSessionId || blocks.length === 0 || augmentOpen}
-            onClick={() => {
-              setAugmentOpen(true)
-              setAugmentError(null)
-              setTimeout(() => augmentInputRef.current?.focus(), 10)
-            }}
-            className="w-full rounded-md border border-indigo-500 bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {selectedIds.size > 0
-              ? `Augment ${selectedIds.size} selected`
-              : `Augment canvas`}
-          </button>
-          <button
-            data-testid="export-btn"
-            onClick={doExport}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-100"
-          >
-            Export Markdown
-          </button>
-          <div className="flex items-center gap-1 text-xs">
-            <span className="text-neutral-500">Save to wiki:</span>
-            {["atlas", "coach", "engineer", "vault"].map(a => (
-              <button
-                key={a}
-                data-testid={`wiki-export-${a}`}
-                disabled={!activeSessionId || wikiBusy}
-                onClick={() => exportToWiki(a)}
-                className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 hover:bg-neutral-100 disabled:opacity-40"
-                title={`Write session as markdown to ~/.openfang/wikis/${a}/pages/`}
+            <button
+              data-testid="sidebar-toggle"
+              onClick={() => setSidebarOpen(false)}
+              className="p-1 px-1.5 hover:bg-white/5 rounded-sm transition-colors text-muted-foreground hover:text-foreground font-mono text-xs"
+            >
+              ‹
+            </button>
+          </div>
+
+          {/* Session list */}
+          <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5 custom-scrollbar">
+            {sessions.map(s => (
+              <div
+                key={s.id}
+                className={`group relative rounded-sm transition-all duration-150 ${
+                  s.id === activeSessionId
+                    ? "bg-primary/10 shadow-[inset_0_1px_0px_rgba(255,255,255,0.05)]"
+                    : "hover:bg-white/5"
+                }`}
               >
-                {a}
-              </button>
+                <div className="flex items-center p-2 px-2.5">
+                  <button
+                    data-testid={`session-item-${s.id}`}
+                    onClick={() => setActiveSessionId(s.id)}
+                    className="flex-1 text-left overflow-hidden"
+                  >
+                    <span className={`font-mono text-[12px] font-bold truncate block ${
+                      s.id === activeSessionId ? "text-primary" : "text-foreground/80 group-hover:text-foreground"
+                    }`}>
+                      {s.name}
+                    </span>
+                  </button>
+                  <button
+                    data-testid={`session-delete-${s.id}`}
+                    onClick={e => { e.stopPropagation(); deleteSession(s.id) }}
+                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/20 rounded-sm text-muted-foreground hover:text-destructive transition-all"
+                    title="Delete canvas"
+                  >
+                    <span className="text-xs">×</span>
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
-          <div className="text-[10px] text-neutral-500">
-            Selection: {selectedIds.size} / {blocks.length}
+
+          {/* Sidebar Footer */}
+          <div className="p-3 border-t border-white/5 bg-black/10 shrink-0 flex flex-col gap-1.5">
+            <button
+              data-testid="new-session"
+              onClick={newSession}
+              className="flex items-center justify-between w-full h-8 px-2.5 rounded-sm bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[9px] font-bold uppercase tracking-[0.1em] transition-all active:scale-[0.98] shadow-sm"
+            >
+              <span>New Canvas</span>
+              <span className="text-sm">+</span>
+            </button>
+            <button
+              data-testid="augment-btn"
+              disabled={!activeSessionId || blocks.length === 0 || augmentOpen}
+              onClick={() => {
+                setAugmentOpen(true)
+                setAugmentError(null)
+                setTimeout(() => augmentInputRef.current?.focus(), 10)
+              }}
+              className="flex items-center justify-between w-full h-8 px-2.5 rounded-sm bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-foreground font-mono text-[9px] font-bold uppercase tracking-[0.1em] transition-all active:scale-[0.98] border border-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <span>{selectedIds.size > 0 ? `Augment ${selectedIds.size}` : "Augment"}</span>
+              <span className="text-[10px]">⌘↵</span>
+            </button>
+            <button
+              data-testid="export-btn"
+              onClick={doExport}
+              className="flex items-center justify-between w-full h-8 px-2.5 rounded-sm bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-foreground font-mono text-[9px] font-bold uppercase tracking-[0.1em] transition-all active:scale-[0.98] border border-white/5"
+            >
+              <span>Export MD</span>
+              <span className="text-[10px]">↓</span>
+            </button>
+            <div className="flex items-center gap-1 pt-1">
+              <span className="font-mono text-[8px] text-muted-foreground/40 uppercase tracking-wider">wiki:</span>
+              {["atlas", "coach", "engineer", "vault"].map(a => (
+                <button
+                  key={a}
+                  data-testid={`wiki-export-${a}`}
+                  disabled={!activeSessionId || wikiBusy}
+                  onClick={() => exportToWiki(a)}
+                  className="rounded-sm border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[8px] font-bold text-muted-foreground hover:bg-white/[0.08] hover:text-foreground disabled:opacity-30 transition-colors"
+                  title={`Export to ${a} wiki`}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+            <div className="font-mono text-[8px] text-muted-foreground/30 uppercase tracking-wider pt-0.5">
+              {selectedIds.size > 0 ? `${selectedIds.size} selected` : `${blocks.length} nodes`}
+            </div>
           </div>
         </div>
       </aside>
 
+      {/* Sidebar open button (visible when collapsed) */}
+      {!sidebarOpen && (
+        <button
+          data-testid="sidebar-toggle"
+          onClick={() => setSidebarOpen(true)}
+          className="absolute left-2 top-2 z-50 p-1.5 rounded-sm bg-white/5 hover:bg-white/10 border border-white/10 text-muted-foreground hover:text-foreground transition-all"
+          title="Show sidebar"
+        >
+          <span className="font-mono text-xs">›</span>
+        </button>
+      )}
+
       {/* Main canvas area */}
       <main className="relative flex-1 overflow-hidden">
-        {/* View toggle — top-left, z above canvas */}
-        <div className="absolute left-2 top-2 z-30 flex items-center gap-0.5 rounded-md border border-neutral-300 bg-white px-1 py-0.5 shadow text-xs">
+        {/* View toggle */}
+        <div className="absolute left-12 top-2 z-30 flex items-center gap-0.5 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1 py-0.5">
           {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
             <button
               key={m}
               onClick={() => setViewMode(m)}
-              className={`rounded px-2 py-1 capitalize ${viewMode === m ? "bg-neutral-900 text-white" : "hover:bg-neutral-100 text-neutral-600"}`}
+              className={`rounded-sm px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-wider transition-all ${
+                viewMode === m
+                  ? "bg-primary/12 border border-primary/35 text-primary shadow-[0_0_0_1px_var(--primary)]"
+                  : "text-white/55 hover:bg-white/[0.06] hover:text-white/80 border border-transparent"
+              }`}
             >
               {m}
             </button>
@@ -1213,7 +1251,7 @@ export default function Page() {
           onMouseDown={onCanvasMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
-          className="relative h-full w-full select-none touch-none"
+          className="relative h-full w-full select-none touch-none bg-[#020202]"
           style={{ cursor: connectingFrom ? "crosshair" : panStateRef.current.active ? "grabbing" : "grab" }}
         >
           <div
@@ -1263,9 +1301,9 @@ export default function Page() {
                   {/* Visible line */}
                   <line
                     x1={x1} y1={y1} x2={x2} y2={y2}
-                    stroke={isSel ? "#3b82f6" : "#999"}
-                    strokeWidth={isSel ? 2.5 : 1.5}
-                    style={{ pointerEvents: "none" }}
+                    stroke={isSel ? "var(--primary)" : "rgba(255,255,255,0.22)"}
+                    strokeWidth={isSel ? 2.5 : 1.2}
+                    style={{ pointerEvents: "none", transition: "stroke-opacity 0.15s" }}
                   />
                   {/* Label at midpoint */}
                   {isEditingConn ? (
@@ -1279,7 +1317,7 @@ export default function Page() {
                           if (e.key === "Enter") { e.preventDefault(); saveConnLabel() }
                           if (e.key === "Escape") { setEditingConnId(null); setEditingConnLabel("") }
                         }}
-                        className="w-full rounded border border-blue-400 bg-white px-1 text-xs text-center outline-none shadow"
+                        className="w-full rounded-sm border border-primary/50 bg-card/95 backdrop-blur-sm px-1 text-xs text-center text-foreground outline-none shadow font-mono"
                         style={{ fontSize: 11, lineHeight: "24px" }}
                         placeholder="label..."
                       />
@@ -1288,8 +1326,9 @@ export default function Page() {
                     <text
                       x={mx} y={my - 6}
                       textAnchor="middle"
-                      fontSize={11}
-                      fill={isSel ? "#3b82f6" : "#666"}
+                      fontSize={10}
+                      fontFamily="var(--font-mono)"
+                      fill={isSel ? "var(--primary)" : "rgba(255,255,255,0.45)"}
                       style={{ pointerEvents: "none", userSelect: "none" }}
                     >
                       {c.label}
@@ -1307,9 +1346,10 @@ export default function Page() {
                   y1={from.y + 30}
                   x2={connectEndPos.x}
                   y2={connectEndPos.y}
-                  stroke="#555"
+                  stroke="var(--primary)"
                   strokeDasharray="4 4"
                   strokeWidth={1.5}
+                  strokeOpacity={0.5}
                 />
               )
             })()}
@@ -1337,10 +1377,13 @@ export default function Page() {
                   height: b.height && b.height > 0 ? b.height : undefined,
                   minHeight: 60,
                   zIndex: 2,
+                  borderLeft: isAI ? "3px solid var(--primary)" : "3px solid rgba(255,255,255,0.08)",
                 }}
-                className={`absolute cursor-move rounded-md bg-white px-3 py-2 text-sm shadow overflow-hidden ${
-                  isSelected ? "ring-2 ring-blue-500" : "ring-1 ring-neutral-200"
-                } ${isAI ? "border-l-4 border-l-indigo-500" : ""}`}
+                className={`absolute cursor-move rounded-sm bg-card/90 backdrop-blur-sm px-3 py-2 text-sm text-foreground overflow-hidden transition-all ${
+                  isSelected
+                    ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]"
+                    : "ring-1 ring-white/[0.07] hover:ring-white/15"
+                }`}
               >
                 {isEditing ? (
                   <textarea
@@ -1355,11 +1398,11 @@ export default function Page() {
                         saveEdit()
                       }
                     }}
-                    className="w-full h-full min-h-[56px] resize-none bg-transparent outline-none"
+                    className="w-full h-full min-h-[56px] resize-none bg-transparent outline-none text-foreground font-mono text-sm"
                     style={{ height: b.height && b.height > 40 ? b.height - 16 : undefined }}
                   />
                 ) : (
-                  <div className="whitespace-pre-wrap break-words">{b.text}</div>
+                  <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">{b.text}</div>
                 )}
                 {/* Connect handle on hover */}
                 {isHovered && !isEditing && !connectingFrom && (
@@ -1371,13 +1414,13 @@ export default function Page() {
                       const rect = canvasRef.current?.getBoundingClientRect()
                       if (rect) setConnectEndPos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
                     }}
-                    className="absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-blue-500 text-xs text-white hover:bg-blue-600"
+                    className="absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-primary text-xs text-primary-foreground hover:brightness-125 transition-all"
                     title="Drag to connect"
                   >
                     ·
                   </button>
                 )}
-                {/* Resize handle (bottom-right). Always visible on touch; enlarged hitbox. */}
+                {/* Resize handle */}
                 {!isEditing && (
                   <div
                     data-testid={`resize-handle-${b.id}`}
@@ -1391,7 +1434,7 @@ export default function Page() {
                     className="absolute bottom-0 right-0 h-4 w-4 cursor-se-resize"
                     title="Drag to resize"
                   >
-                    <svg width="16" height="16" viewBox="0 0 16 16" className="text-neutral-400">
+                    <svg width="16" height="16" viewBox="0 0 16 16" className="text-white/15">
                       <path d="M 14 6 L 6 14 M 14 10 L 10 14 M 14 14 L 14 14" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
                     </svg>
                   </div>
@@ -1401,31 +1444,31 @@ export default function Page() {
           })}
           </div>
           {/* Viewport controls */}
-          <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-md border border-neutral-300 bg-white px-1 py-1 shadow">
+          <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1 py-1">
             <button
               data-testid="zoom-out-btn"
               onClick={zoomOut}
-              className="h-7 w-7 rounded text-lg leading-none hover:bg-neutral-100"
+              className="h-7 w-7 rounded-sm text-lg leading-none text-white/55 hover:bg-white/[0.06] hover:text-white/80 transition-colors"
               title="Zoom out"
             >
               −
             </button>
-            <div className="min-w-[3ch] text-center text-xs text-neutral-600 tabular-nums">
+            <div className="min-w-[3ch] text-center font-mono text-[10px] text-white/40 tabular-nums">
               {Math.round(viewport.scale * 100)}%
             </div>
             <button
               data-testid="zoom-in-btn"
               onClick={zoomIn}
-              className="h-7 w-7 rounded text-lg leading-none hover:bg-neutral-100"
+              className="h-7 w-7 rounded-sm text-lg leading-none text-white/55 hover:bg-white/[0.06] hover:text-white/80 transition-colors"
               title="Zoom in"
             >
               +
             </button>
-            <div className="mx-1 h-5 w-px bg-neutral-200" />
+            <div className="mx-1 h-5 w-px bg-white/10" />
             <button
               data-testid="recenter-btn"
               onClick={recenterViewport}
-              className="h-7 rounded px-2 text-xs hover:bg-neutral-100"
+              className="h-7 rounded-sm px-2 font-mono text-[9px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] hover:text-white/80 transition-colors"
               title="Reset view"
             >
               Reset
@@ -1436,11 +1479,11 @@ export default function Page() {
         {/* Augment prompt */}
         {augmentOpen && (
           <div className="absolute inset-x-0 bottom-20 z-40 flex justify-center">
-            <div className="flex w-[600px] max-w-[90%] flex-col gap-2 rounded-lg border border-neutral-300 bg-white p-3 shadow-lg">
-              <div className="text-xs text-neutral-500">
+            <div className="flex w-[600px] max-w-[90%] flex-col gap-3 rounded-sm border border-white/10 bg-black/85 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
+              <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-white/45">
                 {selectedIds.size > 0
                   ? `Augment ${selectedIds.size} selected block${selectedIds.size === 1 ? "" : "s"}`
-                  : `Augment whole canvas (${blocks.length} block${blocks.length === 1 ? "" : "s"})`}
+                  : `Augment whole canvas · ${blocks.length} block${blocks.length === 1 ? "" : "s"}`}
               </div>
               <input
                 ref={augmentInputRef}
@@ -1457,29 +1500,30 @@ export default function Page() {
                 placeholder={augmentStructured
                   ? "Describe the structure (e.g. concept map with causal arrows)"
                   : "Instruction (e.g. reformat as checklist)"}
-                className="rounded border border-neutral-300 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
+                className="rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-primary/50 transition-colors"
               />
-              <label className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer select-none">
+              <label className="flex items-center gap-2 font-mono text-[10px] text-white/55 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   data-testid="augment-structured"
                   checked={augmentStructured}
                   onChange={e => setAugmentStructured(e.target.checked)}
                   disabled={augmentBusy}
+                  className="accent-primary"
                 />
                 <span>
-                  <b>Structured output</b> — multiple blocks + connections (replaces scope)
+                  <b className="text-foreground">Structured output</b> — multiple blocks + connections
                 </span>
               </label>
               <div className="flex items-center justify-between">
-                <div className="text-xs text-red-600">{augmentError}</div>
+                <div className="font-mono text-[10px] text-destructive">{augmentError}</div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
                       setAugmentOpen(false)
                       setAugmentPrompt("")
                     }}
-                    className="rounded px-2 py-1 text-sm hover:bg-neutral-100"
+                    className="rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] transition-colors"
                   >
                     Cancel
                   </button>
@@ -1487,9 +1531,9 @@ export default function Page() {
                     data-testid="augment-submit"
                     disabled={augmentBusy || !augmentPrompt.trim()}
                     onClick={submitAugment}
-                    className="rounded bg-indigo-600 px-3 py-1 text-sm text-white disabled:opacity-50 hover:bg-indigo-700"
+                    className="rounded-sm bg-primary hover:bg-primary/90 px-4 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-primary-foreground disabled:opacity-30 transition-all active:scale-[0.98]"
                   >
-                    {augmentBusy ? "Augmenting…" : "Augment"}
+                    {augmentBusy ? "Augmenting..." : "Augment"}
                   </button>
                 </div>
               </div>
@@ -1497,48 +1541,76 @@ export default function Page() {
           </div>
         )}
 
-        {/* Bottom text input */}
-        <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center border-t border-neutral-200 bg-white p-3">
-          <input
-            ref={canvasInputRef}
-            data-testid="canvas-input"
-            value={inputText}
-            onChange={e => setInputText(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault()
+        {/* Bottom text input (v1 VimInput style) */}
+        <div className="absolute inset-x-0 bottom-0 z-30 w-full border-t border-white/20 bg-black/80 backdrop-blur-3xl px-6 py-5 flex items-center gap-4 transition-all duration-300 focus-within:border-primary/40 relative">
+          <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent" />
+          <div className="flex items-center gap-3 flex-1">
+            <div className="font-mono text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] select-none">
+              Entry
+            </div>
+            <input
+              ref={canvasInputRef}
+              data-testid="canvas-input"
+              value={inputText}
+              onChange={e => setInputText(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  if (inputText.trim()) {
+                    createBlock(inputText)
+                    setInputText("")
+                  }
+                }
+              }}
+              placeholder="Capture something..."
+              className="flex-1 bg-transparent font-mono text-sm tracking-tight text-white outline-none placeholder:text-white/35"
+              autoFocus
+            />
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <kbd className="flex h-5 items-center rounded border border-white/10 bg-white/5 px-1.5 font-mono text-[9px] text-white/60">
+                <span className="text-[11px] mr-1">⌘</span><span>Z</span>
+              </kbd>
+              <span className="text-[9px] font-mono font-bold text-white/55 uppercase tracking-tighter">Undo</span>
+            </div>
+            <div className="h-4 w-px bg-white/10" />
+            <button
+              onClick={() => {
                 if (inputText.trim()) {
                   createBlock(inputText)
                   setInputText("")
                 }
-              }
-            }}
-            placeholder="Type and press Enter to add a block…"
-            className="w-[600px] max-w-[90%] rounded-lg border border-neutral-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-400"
-          />
+              }}
+              className="font-mono text-[10px] font-bold text-primary uppercase tracking-widest hover:brightness-125 transition-all active:scale-95 disabled:opacity-20"
+              disabled={!inputText.trim()}
+            >
+              Submit
+            </button>
+          </div>
         </div>
 
         {/* Confirm dialog */}
         {confirmState.open && (
-          <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/30"
+          <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm"
             onMouseDown={e => { if (e.target === e.currentTarget) closeConfirm() }}
             onKeyDown={e => {
               if (e.key === "Escape") closeConfirm()
               if (e.key === "Enter") { e.preventDefault(); confirmState.onConfirm(); closeConfirm() }
             }}
           >
-            <div className="w-80 rounded-lg border border-neutral-300 bg-white p-4 shadow-xl">
-              <p className="mb-4 text-sm text-neutral-800">{confirmState.message}</p>
+            <div className="w-80 rounded-sm border border-white/10 bg-card/95 backdrop-blur-md p-4 shadow-xl">
+              <p className="mb-4 font-mono text-sm text-foreground/80">{confirmState.message}</p>
               <div className="flex justify-end gap-2">
                 <button
                   onClick={closeConfirm}
-                  className="rounded px-3 py-1.5 text-sm hover:bg-neutral-100"
+                  className="rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] transition-colors"
                 >Cancel</button>
                 <button
                   ref={confirmBtnRef}
                   autoFocus
                   onClick={() => { confirmState.onConfirm(); closeConfirm() }}
-                  className="rounded bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700"
+                  className="rounded-sm bg-destructive/90 hover:bg-destructive px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white transition-all active:scale-[0.98]"
                 >Delete</button>
               </div>
             </div>
@@ -1549,7 +1621,7 @@ export default function Page() {
         {toast && (
           <div
             data-testid="toast"
-            className="absolute right-4 top-4 z-[70] rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white shadow"
+            className="absolute right-4 top-4 z-[70] rounded-sm border border-white/10 bg-card/95 backdrop-blur-md px-3 py-1.5 font-mono text-[11px] text-foreground shadow-lg"
           >
             {toast}
           </div>
