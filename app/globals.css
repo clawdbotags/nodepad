@@ -71,8 +71,8 @@ html, body {
 
 body {
   overscroll-behavior: none;
-  touch-action: none;
   -webkit-text-size-adjust: 100%;
+  /* touch-action: none is on the canvas element only, not body — blocking it here kills all touch on iPad */
 }
 
 /* ── Custom scrollbar ─────────────────────────────────────────────────────── */
