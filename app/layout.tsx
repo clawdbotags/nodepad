@@ -8,12 +8,13 @@ const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono"
 export const metadata: Metadata = {
   title: 'nodepad v2',
   description: 'Spatial thinking canvas. Augment is the one AI verb.',
-  viewport: {
-    width: 'device-width',
-    initialScale: 1,
-    maximumScale: 1,
-    viewportFit: 'cover',
-  },
+}
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  // Do NOT use viewportFit:'cover' — it extends content behind Safari address bar
 }
 
 export default function RootLayout({
