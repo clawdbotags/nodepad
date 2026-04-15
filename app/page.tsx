@@ -70,6 +70,7 @@ export default function Page() {
   const [augmentPrompt, setAugmentPrompt] = useState("")
   const [augmentBusy, setAugmentBusy] = useState(false)
   const [augmentError, setAugmentError] = useState<string | null>(null)
+  const [augmentStructured, setAugmentStructured] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const canvasInputRef = useRef<HTMLInputElement>(null)
   const augmentInputRef = useRef<HTMLInputElement>(null)
@@ -119,9 +120,9 @@ export default function Page() {
       const list: Session[] = await api("/api/sessions")
       setSessions(list)
       // Deep link: ?session=<id> — load that session if it exists
-      const urlSession = typeof window !== "undefined"
-        ? new URLSearchParams(window.location.search).get("session")
-        : null
+      const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null
+      const urlSession = params?.get("session") || null
+      const urlAugment = params?.get("augment") || null
       if (urlSession && list.some(s => s.id === urlSession)) {
         setActiveSessionId(urlSession)
       } else if (list.length > 0) {
@@ -131,6 +132,13 @@ export default function Page() {
         const s: Session = await api("/api/sessions", { method: "POST", body: JSON.stringify({}) })
         setSessions([s])
         setActiveSessionId(s.id)
+      }
+      // Auto-open augment if ?augment=1 or ?augment=structured
+      if (urlAugment) {
+        setAugmentOpen(true)
+        setAugmentError(null)
+        if (urlAugment === "structured") setAugmentStructured(true)
+        setTimeout(() => augmentInputRef.current?.focus(), 80)
       }
     })().catch(e => showToast(`Load error: ${e.message}`))
   }, [showToast])
@@ -517,33 +525,45 @@ export default function Page() {
       const scopeIds = selectedIds.size > 0 ? Array.from(selectedIds) : blocks.map(b => b.id)
       const res = await api(`/api/sessions/${activeSessionId}/augment`, {
         method: "POST",
-        body: JSON.stringify({ prompt: augmentPrompt, block_ids: scopeIds }),
+        body: JSON.stringify({
+          prompt: augmentPrompt,
+          block_ids: scopeIds,
+          mode: augmentStructured ? "structured" : "default",
+        }),
       })
-      const snap = res.snapshot
-      undoStackRef.current.push({
-        kind: "augment",
-        deleted_notes: snap.deleted_notes,
-        deleted_connections: (snap.deleted_connections || []).filter(
-          (c: Connection) =>
-            scopeIds.includes(c.from_block_id) || scopeIds.includes(c.to_block_id)
-        ),
-        new_note_id: res.new_note.id,
-        rewired_connection_ids: (res.rewired_connections || []).map((c: any) => c.id),
-      })
-      // Refresh
+      // Refresh first (so UI reflects whatever the server did)
       const data = await api(`/api/sessions/${activeSessionId}`)
       setBlocks(data.notes || [])
       setConnections(data.connections || [])
-      setSelectedIds(new Set([res.new_note.id]))
+
+      if (res.mode === "structured") {
+        // Structured mode — select all newly-created blocks. Undo for structured not yet supported.
+        const newIds: string[] = (res.new_blocks || []).map((b: any) => b.id)
+        setSelectedIds(new Set(newIds))
+        showToast(`Structured: ${newIds.length} blocks, ${(res.new_connections || []).length} connections`)
+      } else {
+        const snap = res.snapshot
+        undoStackRef.current.push({
+          kind: "augment",
+          deleted_notes: snap.deleted_notes,
+          deleted_connections: (snap.deleted_connections || []).filter(
+            (c: Connection) =>
+              scopeIds.includes(c.from_block_id) || scopeIds.includes(c.to_block_id)
+          ),
+          new_note_id: res.new_note.id,
+          rewired_connection_ids: (res.rewired_connections || []).map((c: any) => c.id),
+        })
+        setSelectedIds(new Set([res.new_note.id]))
+        showToast("Augmented")
+      }
       setAugmentOpen(false)
       setAugmentPrompt("")
-      showToast("Augmented")
     } catch (e: any) {
       setAugmentError(e.message)
     } finally {
       setAugmentBusy(false)
     }
-  }, [activeSessionId, augmentPrompt, selectedIds, blocks, showToast])
+  }, [activeSessionId, augmentPrompt, selectedIds, blocks, showToast, augmentStructured])
 
   // ── Export to wiki (writes to ~/.openfang/wikis/<agent>/pages/) ──────────
   const [wikiBusy, setWikiBusy] = useState(false)
@@ -893,9 +913,23 @@ export default function Page() {
                   }
                 }}
                 disabled={augmentBusy}
-                placeholder="Instruction (e.g. reformat as checklist)"
+                placeholder={augmentStructured
+                  ? "Describe the structure (e.g. concept map with causal arrows)"
+                  : "Instruction (e.g. reformat as checklist)"}
                 className="rounded border border-neutral-300 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
               />
+              <label className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  data-testid="augment-structured"
+                  checked={augmentStructured}
+                  onChange={e => setAugmentStructured(e.target.checked)}
+                  disabled={augmentBusy}
+                />
+                <span>
+                  <b>Structured output</b> — multiple blocks + connections (replaces scope)
+                </span>
+              </label>
               <div className="flex items-center justify-between">
                 <div className="text-xs text-red-600">{augmentError}</div>
                 <div className="flex gap-2">
