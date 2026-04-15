@@ -1063,7 +1063,7 @@ export default function Page() {
   }, [blocks])
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-[#020202] text-foreground">
+    <div className="relative flex w-screen overflow-hidden bg-[#020202] text-foreground" style={{ height: "100dvh" }}>
       {/* Left Sidebar */}
       <aside
         style={{ width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }}
