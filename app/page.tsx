@@ -64,7 +64,267 @@ async function api(path: string, opts: RequestInit = {}) {
   return res.json()
 }
 
+// ── BSP Tiling Layout ───────────────────────────────────────────────────────
+
+type BSPNode = { type: "leaf"; id: string } | { type: "split"; dir: "h" | "v"; left: BSPNode; right: BSPNode }
+
+function buildBSP(ids: string[], depth = 0): BSPNode | null {
+  if (ids.length === 0) return null
+  if (ids.length === 1) return { type: "leaf", id: ids[0] }
+  const mid = Math.ceil(ids.length / 2)
+  return {
+    type: "split",
+    dir: depth % 2 === 0 ? "v" : "h",
+    left: buildBSP(ids.slice(0, mid), depth + 1)!,
+    right: buildBSP(ids.slice(mid), depth + 1)!,
+  }
+}
+
+function bspWeight(n: BSPNode): number {
+  return n.type === "leaf" ? 1 : bspWeight(n.left) + bspWeight(n.right)
+}
+
+function TiledView({ blocks, connections, selectedIds, onSelect }: {
+  blocks: Block[]
+  connections: Connection[]
+  selectedIds: Set<string>
+  onSelect: (id: string, multi: boolean) => void
+}) {
+  const tree = useMemo(() => buildBSP(blocks.map(b => b.id)), [blocks])
+  const byId = useMemo(() => { const m: Record<string, Block> = {}; for (const b of blocks) m[b.id] = b; return m }, [blocks])
+
+  const renderNode = (node: BSPNode | null): React.ReactNode => {
+    if (!node) return null
+    if (node.type === "leaf") {
+      const b = byId[node.id]
+      if (!b) return null
+      const isSel = selectedIds.has(b.id)
+      const isAI = !!b.is_ai_generated
+      // Connection count for this block
+      const connCount = connections.filter(c => c.from_block_id === b.id || c.to_block_id === b.id).length
+      return (
+        <div
+          key={b.id}
+          className="flex flex-1 p-0.5 overflow-hidden min-w-0 min-h-0"
+        >
+          <div
+            onClick={e => onSelect(b.id, e.ctrlKey || e.metaKey)}
+            className={`flex flex-col flex-1 overflow-hidden bg-neutral-900/80 transition-all cursor-pointer hover:bg-neutral-800/90 ${
+              isSel ? "ring-2 ring-blue-500" : ""
+            }`}
+            style={{
+              borderLeft: `3px solid ${isAI ? "#6366f1" : "#525252"}`,
+            }}
+          >
+            <div className="flex-1 overflow-y-auto p-3">
+              <div className="whitespace-pre-wrap break-words text-sm text-neutral-100 leading-relaxed">
+                {b.text}
+              </div>
+            </div>
+            <div className="flex items-center justify-between px-3 py-1.5 border-t border-white/5 text-[10px] text-neutral-500">
+              <span>{isAI ? "AI" : "user"}</span>
+              {connCount > 0 && <span>{connCount} connection{connCount !== 1 ? "s" : ""}</span>}
+            </div>
+          </div>
+        </div>
+      )
+    }
+    const lw = bspWeight(node.left)
+    const rw = bspWeight(node.right)
+    return (
+      <div className={`flex flex-1 min-h-0 min-w-0 ${node.dir === "v" ? "flex-row" : "flex-col"}`}>
+        <div style={{ flex: lw }} className="flex min-h-0 min-w-0">{renderNode(node.left)}</div>
+        <div style={{ flex: rw }} className="flex min-h-0 min-w-0">{renderNode(node.right)}</div>
+      </div>
+    )
+  }
+
+  if (blocks.length === 0) {
+    return <div className="flex items-center justify-center h-full text-neutral-500 text-sm">No blocks</div>
+  }
+  return <div className="flex h-full w-full overflow-hidden bg-neutral-950">{renderNode(tree)}</div>
+}
+
+// ── Graph View (force-directed) ─────────────────────────────────────────────
+
+function GraphView({ blocks, connections, selectedIds, onSelect }: {
+  blocks: Block[]
+  connections: Connection[]
+  selectedIds: Set<string>
+  onSelect: (id: string, multi: boolean) => void
+}) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map())
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+
+  // Simple force simulation on mount
+  useEffect(() => {
+    if (blocks.length === 0) return
+    const w = 800, h = 600
+    const cx = w / 2, cy = h / 2
+
+    // Degree for sizing
+    const deg = new Map<string, number>()
+    for (const b of blocks) deg.set(b.id, 0)
+    for (const c of connections) {
+      deg.set(c.from_block_id, (deg.get(c.from_block_id) || 0) + 1)
+      deg.set(c.to_block_id, (deg.get(c.to_block_id) || 0) + 1)
+    }
+
+    // Initial positions: circle layout
+    const nodes = blocks.map((b, i) => {
+      const angle = (2 * Math.PI * i) / blocks.length
+      const r = Math.min(w, h) * 0.35
+      return {
+        id: b.id,
+        x: cx + r * Math.cos(angle),
+        y: cy + r * Math.sin(angle),
+        vx: 0, vy: 0,
+        degree: deg.get(b.id) || 0,
+      }
+    })
+    const nodeMap = new Map(nodes.map(n => [n.id, n]))
+
+    // Simple spring sim (60 iterations)
+    for (let iter = 0; iter < 80; iter++) {
+      const alpha = 1 - iter / 80
+      // Repulsion between all nodes
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          let dx = nodes[j].x - nodes[i].x
+          let dy = nodes[j].y - nodes[i].y
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1
+          const force = (120 * alpha) / dist
+          dx = (dx / dist) * force
+          dy = (dy / dist) * force
+          nodes[i].x -= dx; nodes[i].y -= dy
+          nodes[j].x += dx; nodes[j].y += dy
+        }
+      }
+      // Attraction along edges
+      for (const c of connections) {
+        const a = nodeMap.get(c.from_block_id)
+        const b = nodeMap.get(c.to_block_id)
+        if (!a || !b) continue
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1
+        const force = (dist - 120) * 0.04 * alpha
+        const fx = (dx / dist) * force
+        const fy = (dy / dist) * force
+        a.x += fx; a.y += fy
+        b.x -= fx; b.y -= fy
+      }
+      // Center gravity
+      for (const n of nodes) {
+        n.x += (cx - n.x) * 0.01
+        n.y += (cy - n.y) * 0.01
+      }
+    }
+
+    const pos = new Map<string, { x: number; y: number }>()
+    for (const n of nodes) pos.set(n.id, { x: n.x, y: n.y })
+    setPositions(pos)
+  }, [blocks, connections])
+
+  const byId = useMemo(() => { const m: Record<string, Block> = {}; for (const b of blocks) m[b.id] = b; return m }, [blocks])
+  const maxDeg = useMemo(() => {
+    const deg = new Map<string, number>()
+    for (const c of connections) {
+      deg.set(c.from_block_id, (deg.get(c.from_block_id) || 0) + 1)
+      deg.set(c.to_block_id, (deg.get(c.to_block_id) || 0) + 1)
+    }
+    let max = 0; deg.forEach(v => { if (v > max) max = v }); return max
+  }, [connections])
+
+  // Connected to hovered
+  const hoveredConns = useMemo(() => {
+    if (!hoveredId) return new Set<string>()
+    const s = new Set<string>([hoveredId])
+    for (const c of connections) {
+      if (c.from_block_id === hoveredId) s.add(c.to_block_id)
+      if (c.to_block_id === hoveredId) s.add(c.from_block_id)
+    }
+    return s
+  }, [hoveredId, connections])
+
+  if (blocks.length === 0) {
+    return <div className="flex items-center justify-center h-full text-neutral-500 text-sm">No blocks</div>
+  }
+
+  return (
+    <div className="relative h-full w-full overflow-hidden bg-neutral-950">
+      <svg ref={svgRef} viewBox="0 0 800 600" className="w-full h-full" preserveAspectRatio="xMidYMid meet">
+        {/* Edges */}
+        {connections.map(c => {
+          const from = positions.get(c.from_block_id)
+          const to = positions.get(c.to_block_id)
+          if (!from || !to) return null
+          const dimmed = hoveredId && (!hoveredConns.has(c.from_block_id) || !hoveredConns.has(c.to_block_id))
+          return (
+            <g key={c.id}>
+              <line
+                x1={from.x} y1={from.y} x2={to.x} y2={to.y}
+                stroke={dimmed ? "#333" : "#666"}
+                strokeWidth={1.5}
+                opacity={dimmed ? 0.3 : 0.8}
+              />
+              {c.label && (
+                <text
+                  x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 8}
+                  textAnchor="middle" fontSize={9} fill={dimmed ? "#444" : "#999"}
+                  opacity={dimmed ? 0.3 : 1}
+                >
+                  {c.label}
+                </text>
+              )}
+            </g>
+          )
+        })}
+        {/* Nodes */}
+        {blocks.map(b => {
+          const pos = positions.get(b.id)
+          if (!pos) return null
+          const deg = connections.filter(c => c.from_block_id === b.id || c.to_block_id === b.id).length
+          const r = maxDeg > 0 ? 18 + 14 * Math.sqrt(deg / maxDeg) : 22
+          const isSel = selectedIds.has(b.id)
+          const isAI = !!b.is_ai_generated
+          const dimmed = hoveredId && !hoveredConns.has(b.id)
+          const label = b.text.length > 35 ? b.text.slice(0, 32) + "..." : b.text
+          return (
+            <g
+              key={b.id}
+              onClick={e => onSelect(b.id, e.ctrlKey || e.metaKey)}
+              onMouseEnter={() => setHoveredId(b.id)}
+              onMouseLeave={() => setHoveredId(null)}
+              style={{ cursor: "pointer" }}
+              opacity={dimmed ? 0.15 : 1}
+            >
+              <circle
+                cx={pos.x} cy={pos.y} r={r}
+                fill={isAI ? "#4338ca" : "#262626"}
+                stroke={isSel ? "#3b82f6" : isAI ? "#6366f1" : "#525252"}
+                strokeWidth={isSel ? 3 : 1.5}
+              />
+              <text
+                x={pos.x} y={pos.y + r + 14}
+                textAnchor="middle" fontSize={10}
+                fill={dimmed ? "#333" : "#ccc"}
+                style={{ pointerEvents: "none", userSelect: "none" }}
+              >
+                {label}
+              </text>
+            </g>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
+
+type ViewMode = "canvas" | "tiled" | "graph"
 
 export default function Page() {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -116,6 +376,9 @@ export default function Page() {
     startTy: number
     moved: boolean
   }>({ active: false, startClientX: 0, startClientY: 0, startTx: 0, startTy: 0, moved: false })
+
+  // View mode
+  const [viewMode, setViewMode] = useState<ViewMode>("canvas")
 
   // Sidebar collapse
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -897,7 +1160,53 @@ export default function Page() {
 
       {/* Main canvas area */}
       <main className="relative flex-1 overflow-hidden">
-        <div
+        {/* View toggle — top-left, z above canvas */}
+        <div className="absolute left-2 top-2 z-30 flex items-center gap-0.5 rounded-md border border-neutral-300 bg-white px-1 py-0.5 shadow text-xs">
+          {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
+            <button
+              key={m}
+              onClick={() => setViewMode(m)}
+              className={`rounded px-2 py-1 capitalize ${viewMode === m ? "bg-neutral-900 text-white" : "hover:bg-neutral-100 text-neutral-600"}`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+
+        {/* Tiled view */}
+        {viewMode === "tiled" && (
+          <TiledView
+            blocks={blocks}
+            connections={connections}
+            selectedIds={selectedIds}
+            onSelect={(id, multi) => {
+              setSelectedIds(prev => {
+                const next = new Set(multi ? prev : [])
+                if (next.has(id)) next.delete(id); else next.add(id)
+                return next
+              })
+            }}
+          />
+        )}
+
+        {/* Graph view */}
+        {viewMode === "graph" && (
+          <GraphView
+            blocks={blocks}
+            connections={connections}
+            selectedIds={selectedIds}
+            onSelect={(id, multi) => {
+              setSelectedIds(prev => {
+                const next = new Set(multi ? prev : [])
+                if (next.has(id)) next.delete(id); else next.add(id)
+                return next
+              })
+            }}
+          />
+        )}
+
+        {/* Canvas (free-form) view */}
+        {viewMode === "canvas" && <div
           ref={canvasRef}
           data-testid="canvas"
           data-canvas-bg="true"
@@ -1122,7 +1431,7 @@ export default function Page() {
               Reset
             </button>
           </div>
-        </div>
+        </div>}
 
         {/* Augment prompt */}
         {augmentOpen && (
