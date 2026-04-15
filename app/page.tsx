@@ -481,7 +481,21 @@ export default function Page() {
             </button>
           ))}
         </div>
-        <div className="border-t border-neutral-200 p-3">
+        <div className="border-t border-neutral-200 p-3 space-y-2">
+          <button
+            data-testid="augment-btn"
+            disabled={!activeSessionId || blocks.length === 0 || augmentOpen}
+            onClick={() => {
+              setAugmentOpen(true)
+              setAugmentError(null)
+              setTimeout(() => augmentInputRef.current?.focus(), 10)
+            }}
+            className="w-full rounded-md border border-indigo-500 bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {selectedIds.size > 0
+              ? `Augment ${selectedIds.size} selected`
+              : `Augment canvas`}
+          </button>
           <button
             data-testid="export-btn"
             onClick={doExport}
@@ -489,7 +503,7 @@ export default function Page() {
           >
             Export Markdown
           </button>
-          <div className="mt-2 text-[10px] text-neutral-500">
+          <div className="text-[10px] text-neutral-500">
             Selection: {selectedIds.size} / {blocks.length}
           </div>
         </div>
