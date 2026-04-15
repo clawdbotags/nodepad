@@ -43,8 +43,14 @@ async function callLLM(prompt: string, blocks: string[], settings: Record<string
 
   const systemPrompt = `You are an augmentation engine inside a spatial thinking canvas.
 The user has selected one or more text blocks and issued an instruction.
-Return ONE combined text block that satisfies the instruction.
-Output ONLY the resulting text — no preamble, no commentary, no markdown fences.`
+Return ONE combined text block that satisfies the instruction — nothing more.
+
+Rules:
+- Be MINIMAL. Do only what the instruction says. Do not expand, elaborate, or add context the user didn't ask for.
+- If the instruction implies a short output (rewrite, shorten, summarize, one sentence, etc.), keep it short. Match the length and register of the input unless told otherwise.
+- Plain text only. No markdown formatting — no **bold**, no *italic*, no headings, no bullet lists, no numbered lists, no code fences. Write in prose or on separate lines with plain punctuation.
+- No preamble, no commentary, no "here is" wrappers. Just the result.
+- Preserve the user's original tone and language.`
 
   const userPrompt = `Instruction: ${prompt}\n\nSelected blocks:\n\n${blocks
     .map((t, i) => `--- Block ${i + 1} ---\n${t}`)
