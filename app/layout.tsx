@@ -14,7 +14,7 @@ export const viewport = {
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
-  // Do NOT use viewportFit:'cover' — it extends content behind Safari address bar
+  interactiveWidget: 'resizes-content',
 }
 
 export default function RootLayout({
@@ -25,10 +25,19 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`} suppressHydrationWarning>
-        {/* Set --app-height from window.innerHeight so the app fits the visible viewport on iPad Safari */}
+        {/* Use visualViewport.height (actual visible pixels, excludes Safari toolbar) */}
         <script dangerouslySetInnerHTML={{ __html: `
-          function setAppHeight(){document.documentElement.style.setProperty('--app-height',window.innerHeight+'px')}
-          setAppHeight();window.addEventListener('resize',setAppHeight);window.addEventListener('orientationchange',function(){setTimeout(setAppHeight,100)});
+          function setAppHeight(){
+            var h=window.visualViewport?window.visualViewport.height:window.innerHeight;
+            document.documentElement.style.setProperty('--app-height',h+'px');
+          }
+          setAppHeight();
+          if(window.visualViewport){
+            window.visualViewport.addEventListener('resize',setAppHeight);
+            window.visualViewport.addEventListener('scroll',setAppHeight);
+          }
+          window.addEventListener('resize',setAppHeight);
+          window.addEventListener('orientationchange',function(){setTimeout(setAppHeight,150)});
         `}} />
         {children}
       </body>
