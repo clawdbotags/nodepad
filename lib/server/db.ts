@@ -35,6 +35,8 @@ export function getDb(): Database.Database {
       text             TEXT NOT NULL,
       x                REAL NOT NULL DEFAULT 0,
       y                REAL NOT NULL DEFAULT 0,
+      width            REAL NOT NULL DEFAULT 180,
+      height           REAL NOT NULL DEFAULT 0,
       is_ai_generated  INTEGER NOT NULL DEFAULT 0,
       created_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
@@ -56,6 +58,20 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_notes_session ON notes(session_id);
     CREATE INDEX IF NOT EXISTS idx_connections_session ON connections(session_id);
   `)
+
+  // Migration: add width/height columns to existing DBs (idempotent)
+  try {
+    const cols = db.prepare("PRAGMA table_info(notes)").all() as any[]
+    const colNames = new Set(cols.map(c => c.name))
+    if (!colNames.has("width")) {
+      db.exec("ALTER TABLE notes ADD COLUMN width REAL NOT NULL DEFAULT 180")
+    }
+    if (!colNames.has("height")) {
+      db.exec("ALTER TABLE notes ADD COLUMN height REAL NOT NULL DEFAULT 0")
+    }
+  } catch (e) {
+    console.warn("notes width/height migration skipped:", (e as Error).message)
+  }
 
   // One-time import of settings from v1 DB (so augment works out of the box)
   try {
@@ -128,6 +144,8 @@ export interface NoteRow {
   text: string
   x: number
   y: number
+  width: number
+  height: number
   is_ai_generated: number
   created_at: number
   updated_at: number
@@ -169,13 +187,15 @@ export function createNote(note: {
 
 export function updateNote(
   id: string,
-  fields: Partial<{ text: string; x: number; y: number; is_ai_generated: boolean }>
+  fields: Partial<{ text: string; x: number; y: number; width: number; height: number; is_ai_generated: boolean }>
 ): NoteRow | undefined {
   const sets: string[] = []
   const values: any[] = []
   if (fields.text !== undefined) { sets.push("text = ?"); values.push(fields.text) }
   if (fields.x !== undefined) { sets.push("x = ?"); values.push(fields.x) }
   if (fields.y !== undefined) { sets.push("y = ?"); values.push(fields.y) }
+  if (fields.width !== undefined) { sets.push("width = ?"); values.push(fields.width) }
+  if (fields.height !== undefined) { sets.push("height = ?"); values.push(fields.height) }
   if (fields.is_ai_generated !== undefined) { sets.push("is_ai_generated = ?"); values.push(fields.is_ai_generated ? 1 : 0) }
   sets.push("updated_at = ?"); values.push(Date.now())
 

@@ -9,6 +9,8 @@ interface Block {
   text: string
   x: number
   y: number
+  width?: number
+  height?: number
   is_ai_generated: number | boolean
   session_id?: string
 }
@@ -165,6 +167,49 @@ export default function Page() {
       showToast(`Save error: ${e.message}`)
     }
   }, [showToast])
+
+  // ── Update block size (after resize) ─────────────────────────────────────
+  const persistBlockSize = useCallback(async (id: string, width: number, height: number) => {
+    try {
+      await api(`/api/notes/${id}`, { method: "PATCH", body: JSON.stringify({ width, height }) })
+    } catch (e: any) {
+      showToast(`Save error: ${e.message}`)
+    }
+  }, [showToast])
+
+  // Resize state
+  const resizingRef = useRef<{ id: string; startX: number; startY: number; startW: number; startH: number } | null>(null)
+  const onResizeStart = useCallback((e: React.PointerEvent, block: Block) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const el = document.querySelector(`[data-block-id="${block.id}"]`) as HTMLElement | null
+    const rect = el?.getBoundingClientRect()
+    resizingRef.current = {
+      id: block.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: block.width ?? rect?.width ?? 180,
+      startH: block.height || rect?.height || 60,
+    }
+    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+  }, [])
+  const onResizeMove = useCallback((e: React.PointerEvent) => {
+    const r = resizingRef.current
+    if (!r) return
+    const dx = e.clientX - r.startX
+    const dy = e.clientY - r.startY
+    const newW = Math.max(100, r.startW + dx)
+    const newH = Math.max(40, r.startH + dy)
+    setBlocks(prev => prev.map(b => b.id === r.id ? { ...b, width: newW, height: newH } : b))
+  }, [])
+  const onResizeEnd = useCallback((e: React.PointerEvent) => {
+    const r = resizingRef.current
+    resizingRef.current = null
+    if (!r) return
+    ;(e.target as Element).releasePointerCapture?.(e.pointerId)
+    const b = blocks.find(x => x.id === r.id)
+    if (b) persistBlockSize(r.id, b.width ?? 180, b.height ?? 60)
+  }, [blocks, persistBlockSize])
 
   // ── Save edited text ─────────────────────────────────────────────────────
   const saveEdit = useCallback(async () => {
@@ -571,8 +616,15 @@ export default function Page() {
                 onDoubleClick={e => onBlockDoubleClick(e, b)}
                 onMouseEnter={() => setHoveredBlockId(b.id)}
                 onMouseLeave={() => setHoveredBlockId(null)}
-                style={{ left: b.x, top: b.y, zIndex: 2 }}
-                className={`absolute min-h-[60px] w-[180px] cursor-move rounded-md bg-white px-3 py-2 text-sm shadow ${
+                style={{
+                  left: b.x,
+                  top: b.y,
+                  width: b.width ?? 180,
+                  height: b.height && b.height > 0 ? b.height : undefined,
+                  minHeight: 60,
+                  zIndex: 2,
+                }}
+                className={`absolute cursor-move rounded-md bg-white px-3 py-2 text-sm shadow overflow-hidden ${
                   isSelected ? "ring-2 ring-blue-500" : "ring-1 ring-neutral-200"
                 } ${isAI ? "border-l-4 border-l-indigo-500" : ""}`}
               >
@@ -610,6 +662,25 @@ export default function Page() {
                   >
                     ·
                   </button>
+                )}
+                {/* Resize handle (bottom-right). Always visible on touch; enlarged hitbox. */}
+                {!isEditing && (
+                  <div
+                    data-testid={`resize-handle-${b.id}`}
+                    onPointerDown={e => onResizeStart(e, b)}
+                    onPointerMove={onResizeMove}
+                    onPointerUp={onResizeEnd}
+                    onPointerCancel={onResizeEnd}
+                    onMouseDown={e => e.stopPropagation()}
+                    onDoubleClick={e => e.stopPropagation()}
+                    style={{ touchAction: "none" }}
+                    className="absolute bottom-0 right-0 h-4 w-4 cursor-se-resize"
+                    title="Drag to resize"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" className="text-neutral-400">
+                      <path d="M 14 6 L 6 14 M 14 10 L 10 14 M 14 14 L 14 14" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+                    </svg>
+                  </div>
                 )}
               </div>
             )
