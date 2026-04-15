@@ -90,8 +90,10 @@ export default function Page() {
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null)
   const [connectEndPos, setConnectEndPos] = useState<{ x: number; y: number } | null>(null)
 
-  // Viewport pan (canvas-space translation)
-  const [viewport, setViewport] = useState<{ tx: number; ty: number }>({ tx: 0, ty: 0 })
+  // Viewport pan + zoom (transform: translate(tx,ty) scale(s))
+  const [viewport, setViewport] = useState<{ tx: number; ty: number; scale: number }>({ tx: 0, ty: 0, scale: 1 })
+  const MIN_SCALE = 0.2
+  const MAX_SCALE = 3
   const panStateRef = useRef<{
     active: boolean
     startClientX: number
@@ -210,12 +212,12 @@ export default function Page() {
   const onResizeMove = useCallback((e: React.PointerEvent) => {
     const r = resizingRef.current
     if (!r) return
-    const dx = e.clientX - r.startX
-    const dy = e.clientY - r.startY
+    const dx = (e.clientX - r.startX) / viewport.scale
+    const dy = (e.clientY - r.startY) / viewport.scale
     const newW = Math.max(100, r.startW + dx)
     const newH = Math.max(40, r.startH + dy)
     setBlocks(prev => prev.map(b => b.id === r.id ? { ...b, width: newW, height: newH } : b))
-  }, [])
+  }, [viewport.scale])
   const onResizeEnd = useCallback((e: React.PointerEvent) => {
     const r = resizingRef.current
     resizingRef.current = null
@@ -266,8 +268,9 @@ export default function Page() {
       const dy = e.clientY - ds.startClientY
       if (!ds.moved && Math.abs(dx) + Math.abs(dy) > 3) ds.moved = true
       if (ds.moved) {
-        const newX = ds.startBlockX + dx
-        const newY = ds.startBlockY + dy
+        // divide by scale so block moves 1:1 with pointer on screen
+        const newX = ds.startBlockX + dx / viewport.scale
+        const newY = ds.startBlockY + dy / viewport.scale
         setBlocks(prev => prev.map(b => (b.id === ds.blockId ? { ...b, x: newX, y: newY } : b)))
       }
     } else if (ps.active) {
@@ -275,18 +278,18 @@ export default function Page() {
       const dy = e.clientY - ps.startClientY
       if (!ps.moved && Math.abs(dx) + Math.abs(dy) > 3) ps.moved = true
       if (ps.moved) {
-        setViewport({ tx: ps.startTx + dx, ty: ps.startTy + dy })
+        setViewport(v => ({ ...v, tx: ps.startTx + dx, ty: ps.startTy + dy }))
       }
     } else if (connectingFrom) {
       const rect = canvasRef.current?.getBoundingClientRect()
       if (rect) {
         setConnectEndPos({
-          x: e.clientX - rect.left - viewport.tx,
-          y: e.clientY - rect.top - viewport.ty,
+          x: (e.clientX - rect.left - viewport.tx) / viewport.scale,
+          y: (e.clientY - rect.top - viewport.ty) / viewport.scale,
         })
       }
     }
-  }, [connectingFrom, viewport.tx, viewport.ty])
+  }, [connectingFrom, viewport.tx, viewport.ty, viewport.scale])
 
   const onMouseUp = useCallback((e: React.MouseEvent) => {
     const ds = dragStateRef.current
@@ -354,9 +357,46 @@ export default function Page() {
   }
 
   const recenterViewport = useCallback(() => {
-    setViewport({ tx: 0, ty: 0 })
+    setViewport({ tx: 0, ty: 0, scale: 1 })
     showToast("Recentered")
   }, [showToast])
+
+  // Zoom around a specific screen point (cx,cy relative to canvas element)
+  const zoomAt = useCallback((factor: number, cx: number, cy: number) => {
+    setViewport(v => {
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, v.scale * factor))
+      const k = newScale / v.scale
+      return {
+        scale: newScale,
+        tx: cx - (cx - v.tx) * k,
+        ty: cy - (cy - v.ty) * k,
+      }
+    })
+  }, [])
+
+  const zoomIn = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    zoomAt(1.2, rect.width / 2, rect.height / 2)
+  }, [zoomAt])
+
+  const zoomOut = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    zoomAt(1 / 1.2, rect.width / 2, rect.height / 2)
+  }, [zoomAt])
+
+  // Wheel zoom (Ctrl+wheel or trackpad pinch — browsers emit wheel with ctrlKey)
+  const onCanvasWheel = useCallback((e: React.WheelEvent) => {
+    if (!e.ctrlKey && !e.metaKey) return
+    e.preventDefault()
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const cx = e.clientX - rect.left
+    const cy = e.clientY - rect.top
+    const factor = Math.exp(-e.deltaY * 0.01)
+    zoomAt(factor, cx, cy)
+  }, [zoomAt])
 
   // ── Double click block: edit ─────────────────────────────────────────────
   const onBlockDoubleClick = (e: React.MouseEvent, block: Block) => {
@@ -627,6 +667,7 @@ export default function Page() {
           onMouseDown={onCanvasMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
+          onWheel={onCanvasWheel}
           className="relative h-full w-full select-none touch-none"
           style={{ cursor: connectingFrom ? "crosshair" : panStateRef.current.active ? "grabbing" : "grab" }}
         >
@@ -635,7 +676,7 @@ export default function Page() {
             style={{
               position: "absolute",
               inset: 0,
-              transform: `translate(${viewport.tx}px, ${viewport.ty}px)`,
+              transform: `translate(${viewport.tx}px, ${viewport.ty}px) scale(${viewport.scale})`,
               transformOrigin: "0 0",
             }}
           >
@@ -759,15 +800,37 @@ export default function Page() {
             )
           })}
           </div>
-          {/* Recenter button */}
-          <button
-            data-testid="recenter-btn"
-            onClick={recenterViewport}
-            className="absolute right-2 top-2 z-20 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs shadow hover:bg-neutral-100"
-            title="Recenter canvas"
-          >
-            ⊙ Center
-          </button>
+          {/* Viewport controls */}
+          <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-md border border-neutral-300 bg-white px-1 py-1 shadow">
+            <button
+              data-testid="zoom-out-btn"
+              onClick={zoomOut}
+              className="h-7 w-7 rounded text-lg leading-none hover:bg-neutral-100"
+              title="Zoom out"
+            >
+              −
+            </button>
+            <div className="min-w-[3ch] text-center text-xs text-neutral-600 tabular-nums">
+              {Math.round(viewport.scale * 100)}%
+            </div>
+            <button
+              data-testid="zoom-in-btn"
+              onClick={zoomIn}
+              className="h-7 w-7 rounded text-lg leading-none hover:bg-neutral-100"
+              title="Zoom in"
+            >
+              +
+            </button>
+            <div className="mx-1 h-5 w-px bg-neutral-200" />
+            <button
+              data-testid="recenter-btn"
+              onClick={recenterViewport}
+              className="h-7 rounded px-2 text-xs hover:bg-neutral-100"
+              title="Reset view"
+            >
+              Reset
+            </button>
+          </div>
         </div>
 
         {/* Augment prompt */}
