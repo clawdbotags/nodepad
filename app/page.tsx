@@ -1195,12 +1195,12 @@ export default function Page() {
       {/* Main canvas area */}
       <main className="relative flex-1 overflow-hidden">
         {/* View toggle */}
-        <div className="absolute left-12 top-2 z-30 flex items-center gap-0.5 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1 py-0.5">
+        <div className="absolute left-12 top-2 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
           {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
             <button
               key={m}
               onClick={() => setViewMode(m)}
-              className={`rounded-sm px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-wider transition-all ${
+              className={`rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-all ${
                 viewMode === m
                   ? "bg-primary/12 border border-primary/35 text-primary shadow-[0_0_0_1px_var(--primary)]"
                   : "text-white/55 hover:bg-white/[0.06] hover:text-white/80 border border-transparent"
@@ -1379,7 +1379,7 @@ export default function Page() {
                   zIndex: 2,
                   borderLeft: isAI ? "3px solid var(--primary)" : "3px solid rgba(255,255,255,0.08)",
                 }}
-                className={`absolute cursor-move rounded-sm bg-card/90 backdrop-blur-sm px-3 py-2 text-sm text-foreground overflow-hidden transition-all ${
+                className={`absolute cursor-move rounded-sm bg-card/90 backdrop-blur-sm px-3 py-2 text-sm text-foreground overflow-hidden transition-[box-shadow,ring-color,background-color] duration-150 ${
                   isSelected
                     ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]"
                     : "ring-1 ring-white/[0.07] hover:ring-white/15"
