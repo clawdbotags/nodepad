@@ -47,26 +47,51 @@ async function callLLMStructured(prompt: string, blocks: string[], settings: Rec
     (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
   if (!apiKey) throw new Error("No API key configured. Set it via /api/settings.")
 
-  const systemPrompt = `You are a structuring engine for a spatial thinking canvas. The user provides source text and an instruction. You must return a JSON object that defines a graph of text blocks on a 2D canvas.
+  const inputCount = blocks.length
+  // Scale output target with input size. Default: preserve information — roughly half
+  // the input count, never less than a third, never more than input count.
+  // User instruction can override (e.g. "summarize to 5 blocks").
+  const minBlocks = Math.max(3, Math.ceil(inputCount / 3))
+  const maxBlocks = Math.max(minBlocks + 2, Math.ceil(inputCount * 1.2))
+  const targetBlocks = Math.max(minBlocks, Math.ceil(inputCount / 2))
+
+  const systemPrompt = `You are a structuring engine for a spatial thinking canvas. The user provides ${inputCount} source blocks and an instruction. You must return a JSON object that defines a graph of text blocks on a 2D canvas.
 
 Return ONLY valid JSON. No markdown fences, no prose, no commentary. The exact shape is:
 
 {
   "blocks": [
-    { "text": "short label or concept", "x": 100, "y": 100 }
+    { "text": "substantive sentence or phrase", "x": 100, "y": 100 }
   ],
   "connections": [
     { "from": 0, "to": 1 }
   ]
 }
 
-Rules:
-- "text" values are plain text, short (typically 2–12 words, max ~30). One idea per block. No markdown.
-- "x"/"y" are optional; if omitted the canvas will auto-layout. Provide them if a specific spatial arrangement is part of the user's instruction (tree, flow, left-to-right, etc.). Use grid-like values in the 100–1600 range.
-- "connections.from" and "connections.to" are 0-based indices into the blocks array. Only reference valid indices.
-- Produce between 3 and 30 blocks depending on source richness. Err on the side of fewer, higher-signal blocks.
-- Preserve the source's original language.
-- Do NOT restate the user's instruction as a block. The blocks are the structure itself.`
+## Information preservation (critical)
+
+- The source has ${inputCount} blocks. Your output should have approximately ${targetBlocks} blocks (minimum ${minBlocks}, maximum ${maxBlocks}) UNLESS the user's instruction explicitly asks for a different count ("summarize to 5", "expand into 40", etc.).
+- Default behavior is to PRESERVE information, not to condense. A 60-block page becomes ~30 blocks, not 3. Think of it as re-organizing and reconnecting, not summarizing.
+- Each block can be a full sentence or clause (up to ~25 words) when the source material is substantive. Don't compress to 4-word labels unless the source is already label-like. Only go very short when the user explicitly asks for a concept map, keyword graph, or label hierarchy.
+- Preserve the source's original language. Preserve specific terms, names, numbers verbatim.
+
+## Connections
+
+- "connections.from" and "connections.to" are 0-based indices into the blocks array you return.
+- Connections must express a real semantic relationship: causes, contains, leads-to, depends-on, contrasts-with, etc. Not merely "these were near each other in the source."
+- Typical density: between 0.5× and 1.5× the block count. A graph of 30 blocks usually has 15–45 edges. Fewer is fine if content doesn't warrant more; do not invent edges.
+- No self-loops, no duplicate edges. Indices must be valid.
+
+## Layout
+
+- "x"/"y" are optional. Provide them only when the user's instruction specifies a spatial arrangement (tree, flow, left-to-right, hierarchy, timeline). Use values in the 100–1800 range, roughly 200–300 apart. Otherwise omit x/y and let the canvas auto-layout.
+
+## What NOT to do
+
+- Do not restate the user's instruction as a block.
+- Do not collapse many distinct ideas into one block just to make the graph "cleaner."
+- Do not produce 3 blocks from 60 source blocks. That is information destruction, not structuring.
+- Do not produce connections without a stated reason; every edge should correspond to something in the source.`
 
   const userPrompt = `Instruction: ${prompt}\n\nSource blocks:\n\n${blocks
     .map((t, i) => `--- Block ${i + 1} ---\n${t}`)

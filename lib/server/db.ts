@@ -73,6 +73,16 @@ export function getDb(): Database.Database {
     console.warn("notes width/height migration skipped:", (e as Error).message)
   }
 
+  // Migration: add label column to connections (idempotent)
+  try {
+    const cols = db.prepare("PRAGMA table_info(connections)").all() as any[]
+    if (!cols.some((c: any) => c.name === "label")) {
+      db.exec("ALTER TABLE connections ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+    }
+  } catch (e) {
+    console.warn("connections label migration skipped:", (e as Error).message)
+  }
+
   // One-time import of settings from v1 DB (so augment works out of the box)
   try {
     const row = db.prepare("SELECT COUNT(*) as c FROM settings").get() as any
@@ -221,7 +231,19 @@ export interface ConnectionRow {
   session_id: string
   from_block_id: string
   to_block_id: string
+  label: string
   created_at: number
+}
+
+export function updateConnection(id: string, fields: { label?: string }) {
+  const sets: string[] = []
+  const vals: any[] = []
+  if (typeof fields.label === "string") { sets.push("label = ?"); vals.push(fields.label) }
+  if (sets.length === 0) return
+  vals.push(id)
+  getDb().prepare(`UPDATE connections SET ${sets.join(", ")} WHERE id = ?`).run(...vals)
+  const row = getDb().prepare("SELECT session_id FROM connections WHERE id = ?").get(id) as any
+  if (row) updateSession(row.session_id)
 }
 
 export function listConnections(sessionId: string): ConnectionRow[] {

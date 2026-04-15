@@ -19,6 +19,7 @@ interface Connection {
   id: string
   from_block_id: string
   to_block_id: string
+  label?: string
   session_id?: string
 }
 
@@ -31,14 +32,23 @@ interface Session {
 
 // ── Undo snapshot shape ──────────────────────────────────────────────────────
 
-type UndoEntry = {
-  kind: "augment"
-  // To undo: recreate these notes and connections, delete the new note and rewired connections
-  deleted_notes: Block[]
-  deleted_connections: Connection[]
-  new_note_id: string
-  rewired_connection_ids: string[]
-}
+type UndoEntry =
+  | {
+      kind: "augment"
+      // Undo: recreate these notes + connections, delete the new note + rewired connections
+      deleted_notes: Block[]
+      deleted_connections: Connection[]
+      new_note_id: string
+      rewired_connection_ids: string[]
+    }
+  | {
+      kind: "augment-structured"
+      // Undo: delete all new blocks + connections, recreate deleted notes + connections
+      deleted_notes: Block[]
+      deleted_connections: Connection[]
+      new_block_ids: string[]
+      new_connection_ids: string[]
+    }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -65,6 +75,9 @@ export default function Page() {
   const [inputText, setInputText] = useState("")
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState("")
+  const [selectedConnIds, setSelectedConnIds] = useState<Set<string>>(new Set())
+  const [editingConnId, setEditingConnId] = useState<string | null>(null)
+  const [editingConnLabel, setEditingConnLabel] = useState("")
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null)
   const [augmentOpen, setAugmentOpen] = useState(false)
   const [augmentPrompt, setAugmentPrompt] = useState("")
@@ -106,6 +119,19 @@ export default function Page() {
 
   // Sidebar collapse
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  // Custom confirm dialog
+  const [confirmState, setConfirmState] = useState<{
+    open: boolean
+    message: string
+    onConfirm: () => void
+  }>({ open: false, message: "", onConfirm: () => {} })
+  const confirmBtnRef = useRef<HTMLButtonElement>(null)
+  const askConfirm = useCallback((message: string, onConfirm: () => void) => {
+    setConfirmState({ open: true, message, onConfirm })
+    setTimeout(() => confirmBtnRef.current?.focus(), 20)
+  }, [])
+  const closeConfirm = useCallback(() => setConfirmState(s => ({ ...s, open: false })), [])
 
   const canvasRef = useRef<HTMLDivElement>(null)
 
@@ -177,16 +203,9 @@ export default function Page() {
     setBlocks(prev => [...prev, n])
   }, [activeSessionId, blocks.length])
 
-  // ── Delete selected blocks (with confirm) ────────────────────────────────
-  const deleteSelected = useCallback(async (skipConfirm = false) => {
+  // ── Delete selected blocks (with in-app confirm) ─────────────────────────
+  const performDeleteSelected = useCallback(async () => {
     if (selectedIds.size === 0) return
-    const n = selectedIds.size
-    if (!skipConfirm) {
-      const ok = typeof window !== "undefined"
-        ? window.confirm(`Delete ${n} selected block${n === 1 ? "" : "s"}?`)
-        : true
-      if (!ok) return
-    }
     const ids = Array.from(selectedIds)
     for (const id of ids) {
       await api(`/api/notes/${id}`, { method: "DELETE" })
@@ -196,32 +215,42 @@ export default function Page() {
     setSelectedIds(new Set())
   }, [selectedIds])
 
+  const deleteSelected = useCallback(async (skipConfirm = false) => {
+    if (selectedIds.size === 0) return
+    const n = selectedIds.size
+    if (skipConfirm) {
+      performDeleteSelected()
+      return
+    }
+    askConfirm(`Delete ${n} selected block${n === 1 ? "" : "s"}?`, () => performDeleteSelected())
+  }, [selectedIds, performDeleteSelected, askConfirm])
+
   // ── Delete session ──────────────────────────────────────────────────────
   const deleteSession = useCallback(async (id: string) => {
     const s = sessions.find(x => x.id === id)
     const label = s?.name || id
-    const ok = typeof window !== "undefined"
-      ? window.confirm(`Delete canvas "${label}" and all its blocks? This cannot be undone.`)
-      : true
-    if (!ok) return
-    try {
-      await api(`/api/sessions/${id}`, { method: "DELETE" })
-      setSessions(prev => {
-        const next = prev.filter(x => x.id !== id)
-        // If we deleted the active one, switch to first remaining (or clear)
-        if (id === activeSessionId) {
-          setActiveSessionId(next[0]?.id || "")
-          setBlocks([])
-          setConnections([])
-          setSelectedIds(new Set())
+    askConfirm(
+      `Delete canvas "${label}" and all its blocks? This cannot be undone.`,
+      async () => {
+        try {
+          await api(`/api/sessions/${id}`, { method: "DELETE" })
+          setSessions(prev => {
+            const next = prev.filter(x => x.id !== id)
+            if (id === activeSessionId) {
+              setActiveSessionId(next[0]?.id || "")
+              setBlocks([])
+              setConnections([])
+              setSelectedIds(new Set())
+            }
+            return next
+          })
+          showToast("Canvas deleted")
+        } catch (e: any) {
+          showToast(`Delete failed: ${e.message}`)
         }
-        return next
-      })
-      showToast("Canvas deleted")
-    } catch (e: any) {
-      showToast(`Delete failed: ${e.message}`)
-    }
-  }, [sessions, activeSessionId, showToast])
+      }
+    )
+  }, [sessions, activeSessionId, showToast, askConfirm])
 
   // ── Update block position (after drag) ───────────────────────────────────
   const persistBlockPos = useCallback(async (id: string, x: number, y: number) => {
@@ -274,6 +303,21 @@ export default function Page() {
     const b = blocks.find(x => x.id === r.id)
     if (b) persistBlockSize(r.id, b.width ?? 180, b.height ?? 60)
   }, [blocks, persistBlockSize])
+
+  // ── Save connection label ────────────────────────────────────────────────
+  const saveConnLabel = useCallback(async () => {
+    if (!editingConnId) return
+    const id = editingConnId
+    const label = editingConnLabel
+    setEditingConnId(null)
+    setEditingConnLabel("")
+    try {
+      await api(`/api/connections/${id}`, { method: "PATCH", body: JSON.stringify({ label }) })
+      setConnections(prev => prev.map(c => c.id === id ? { ...c, label } : c))
+    } catch (e: any) {
+      showToast(`Label save error: ${e.message}`)
+    }
+  }, [editingConnId, editingConnLabel, showToast])
 
   // ── Save edited text ─────────────────────────────────────────────────────
   const saveEdit = useCallback(async () => {
@@ -367,6 +411,7 @@ export default function Page() {
     if (ps.active) {
       if (!ps.moved) {
         setSelectedIds(new Set())
+        setSelectedConnIds(new Set())
         canvasInputRef.current?.blur()
       }
       panStateRef.current = { active: false, startClientX: 0, startClientY: 0, startTx: 0, startTy: 0, moved: false }
@@ -491,10 +536,24 @@ export default function Page() {
       }
 
       // Delete key
-      if ((e.key === "Delete" || e.key === "Backspace") && !isInput && selectedIds.size > 0) {
-        e.preventDefault()
-        deleteSelected()
-        return
+      if ((e.key === "Delete" || e.key === "Backspace") && !isInput) {
+        if (selectedIds.size > 0) {
+          e.preventDefault()
+          deleteSelected()
+          return
+        }
+        if (selectedConnIds.size > 0) {
+          e.preventDefault()
+          const count = selectedConnIds.size
+          askConfirm(`Delete ${count} selected connection${count === 1 ? "" : "s"}?`, async () => {
+            for (const cid of selectedConnIds) {
+              await api(`/api/connections/${cid}`, { method: "DELETE" }).catch(() => {})
+            }
+            setConnections(prev => prev.filter(c => !selectedConnIds.has(c.id)))
+            setSelectedConnIds(new Set())
+          })
+          return
+        }
       }
 
       // Enter on canvas when not in input => open augment
@@ -514,6 +573,7 @@ export default function Page() {
           setEditingText("")
         } else {
           setSelectedIds(new Set())
+          setSelectedConnIds(new Set())
         }
       }
     }
@@ -569,6 +629,47 @@ export default function Page() {
       } catch (e: any) {
         showToast(`Undo failed: ${e.message}`)
       }
+    } else if (entry.kind === "augment-structured" && activeSessionId) {
+      try {
+        // Delete all new blocks (cascades their connections on the server)
+        for (const bid of entry.new_block_ids) {
+          await api(`/api/notes/${bid}`, { method: "DELETE" }).catch(() => {})
+        }
+        // Explicitly delete any remaining new connections just in case
+        for (const cid of entry.new_connection_ids) {
+          await api(`/api/connections/${cid}`, { method: "DELETE" }).catch(() => {})
+        }
+        // Recreate the deleted blocks
+        for (const n of entry.deleted_notes) {
+          await api(`/api/sessions/${activeSessionId}/notes`, {
+            method: "POST",
+            body: JSON.stringify({
+              id: n.id,
+              text: n.text,
+              x: n.x,
+              y: n.y,
+              is_ai_generated: !!n.is_ai_generated,
+            }),
+          }).catch(() => {})
+        }
+        // Recreate the deleted connections
+        for (const c of entry.deleted_connections) {
+          await api(`/api/sessions/${activeSessionId}/connections`, {
+            method: "POST",
+            body: JSON.stringify({
+              id: c.id,
+              from_block_id: c.from_block_id,
+              to_block_id: c.to_block_id,
+            }),
+          }).catch(() => {})
+        }
+        const data = await api(`/api/sessions/${activeSessionId}`)
+        setBlocks(data.notes || [])
+        setConnections(data.connections || [])
+        showToast(`Undone structured (${entry.deleted_notes.length} restored)`)
+      } catch (e: any) {
+        showToast(`Undo failed: ${e.message}`)
+      }
     }
   }, [activeSessionId, showToast])
 
@@ -593,10 +694,18 @@ export default function Page() {
       setConnections(data.connections || [])
 
       if (res.mode === "structured") {
-        // Structured mode — select all newly-created blocks. Undo for structured not yet supported.
-        const newIds: string[] = (res.new_blocks || []).map((b: any) => b.id)
-        setSelectedIds(new Set(newIds))
-        showToast(`Structured: ${newIds.length} blocks, ${(res.new_connections || []).length} connections`)
+        const newBlockIds: string[] = (res.new_blocks || []).map((b: any) => b.id)
+        const newConnIds: string[] = (res.new_connections || []).map((c: any) => c.id)
+        const snap = res.snapshot || {}
+        undoStackRef.current.push({
+          kind: "augment-structured",
+          deleted_notes: snap.deleted_notes || [],
+          deleted_connections: snap.deleted_connections || [],
+          new_block_ids: newBlockIds,
+          new_connection_ids: newConnIds,
+        })
+        setSelectedIds(new Set(newBlockIds))
+        showToast(`Structured: ${newBlockIds.length} blocks, ${newConnIds.length} connections`)
       } else {
         const snap = res.snapshot
         undoStackRef.current.push({
@@ -813,16 +922,71 @@ export default function Page() {
               const from = blocksById[c.from_block_id]
               const to = blocksById[c.to_block_id]
               if (!from || !to) return null
+              const fromW = from.width ?? 180, fromH = from.height && from.height > 0 ? from.height : 60
+              const toW = to.width ?? 180, toH = to.height && to.height > 0 ? to.height : 60
+              const x1 = from.x + fromW / 2, y1 = from.y + fromH / 2
+              const x2 = to.x + toW / 2, y2 = to.y + toH / 2
+              const mx = (x1 + x2) / 2, my = (y1 + y2) / 2
+              const isSel = selectedConnIds.has(c.id)
+              const isEditingConn = editingConnId === c.id
               return (
-                <line
-                  key={c.id}
-                  x1={from.x + 90}
-                  y1={from.y + 30}
-                  x2={to.x + 90}
-                  y2={to.y + 30}
-                  stroke="#999"
-                  strokeWidth={1.5}
-                />
+                <g key={c.id}>
+                  {/* Fat invisible hit-area for click/touch */}
+                  <line
+                    x1={x1} y1={y1} x2={x2} y2={y2}
+                    stroke="transparent" strokeWidth={14}
+                    style={{ cursor: "pointer", pointerEvents: "stroke" }}
+                    onClick={e => {
+                      e.stopPropagation()
+                      if (e.ctrlKey || e.metaKey) {
+                        setSelectedConnIds(prev => { const n = new Set(prev); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n })
+                      } else {
+                        setSelectedConnIds(new Set([c.id]))
+                        setSelectedIds(new Set())
+                      }
+                    }}
+                    onDoubleClick={e => {
+                      e.stopPropagation()
+                      setEditingConnId(c.id)
+                      setEditingConnLabel(c.label || "")
+                    }}
+                  />
+                  {/* Visible line */}
+                  <line
+                    x1={x1} y1={y1} x2={x2} y2={y2}
+                    stroke={isSel ? "#3b82f6" : "#999"}
+                    strokeWidth={isSel ? 2.5 : 1.5}
+                    style={{ pointerEvents: "none" }}
+                  />
+                  {/* Label at midpoint */}
+                  {isEditingConn ? (
+                    <foreignObject x={mx - 80} y={my - 14} width={160} height={28} style={{ overflow: "visible" }}>
+                      <input
+                        autoFocus
+                        value={editingConnLabel}
+                        onChange={e => setEditingConnLabel(e.target.value)}
+                        onBlur={saveConnLabel}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") { e.preventDefault(); saveConnLabel() }
+                          if (e.key === "Escape") { setEditingConnId(null); setEditingConnLabel("") }
+                        }}
+                        className="w-full rounded border border-blue-400 bg-white px-1 text-xs text-center outline-none shadow"
+                        style={{ fontSize: 11, lineHeight: "24px" }}
+                        placeholder="label..."
+                      />
+                    </foreignObject>
+                  ) : c.label ? (
+                    <text
+                      x={mx} y={my - 6}
+                      textAnchor="middle"
+                      fontSize={11}
+                      fill={isSel ? "#3b82f6" : "#666"}
+                      style={{ pointerEvents: "none", userSelect: "none" }}
+                    >
+                      {c.label}
+                    </text>
+                  ) : null}
+                </g>
               )
             })}
             {connectingFrom && connectEndPos && (() => {
@@ -882,8 +1046,8 @@ export default function Page() {
                         saveEdit()
                       }
                     }}
-                    className="w-full resize-none bg-transparent outline-none"
-                    rows={3}
+                    className="w-full h-full min-h-[56px] resize-none bg-transparent outline-none"
+                    style={{ height: b.height && b.height > 40 ? b.height - 16 : undefined }}
                   />
                 ) : (
                   <div className="whitespace-pre-wrap break-words">{b.text}</div>
@@ -1045,11 +1209,38 @@ export default function Page() {
           />
         </div>
 
+        {/* Confirm dialog */}
+        {confirmState.open && (
+          <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/30"
+            onMouseDown={e => { if (e.target === e.currentTarget) closeConfirm() }}
+            onKeyDown={e => {
+              if (e.key === "Escape") closeConfirm()
+              if (e.key === "Enter") { e.preventDefault(); confirmState.onConfirm(); closeConfirm() }
+            }}
+          >
+            <div className="w-80 rounded-lg border border-neutral-300 bg-white p-4 shadow-xl">
+              <p className="mb-4 text-sm text-neutral-800">{confirmState.message}</p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={closeConfirm}
+                  className="rounded px-3 py-1.5 text-sm hover:bg-neutral-100"
+                >Cancel</button>
+                <button
+                  ref={confirmBtnRef}
+                  autoFocus
+                  onClick={() => { confirmState.onConfirm(); closeConfirm() }}
+                  className="rounded bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700"
+                >Delete</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Toast */}
         {toast && (
           <div
             data-testid="toast"
-            className="absolute right-4 top-4 z-50 rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white shadow"
+            className="absolute right-4 top-4 z-[70] rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white shadow"
           >
             {toast}
           </div>
