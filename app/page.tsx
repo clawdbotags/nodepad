@@ -118,7 +118,13 @@ export default function Page() {
     ;(async () => {
       const list: Session[] = await api("/api/sessions")
       setSessions(list)
-      if (list.length > 0) {
+      // Deep link: ?session=<id> — load that session if it exists
+      const urlSession = typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("session")
+        : null
+      if (urlSession && list.some(s => s.id === urlSession)) {
+        setActiveSessionId(urlSession)
+      } else if (list.length > 0) {
         setActiveSessionId(list[0].id)
       } else {
         // auto-create first session
@@ -539,6 +545,24 @@ export default function Page() {
     }
   }, [activeSessionId, augmentPrompt, selectedIds, blocks, showToast])
 
+  // ── Export to wiki (writes to ~/.openfang/wikis/<agent>/pages/) ──────────
+  const [wikiBusy, setWikiBusy] = useState(false)
+  const exportToWiki = useCallback(async (agent: string) => {
+    if (!activeSessionId || wikiBusy) return
+    setWikiBusy(true)
+    try {
+      const res = await api(`/api/wiki/export`, {
+        method: "POST",
+        body: JSON.stringify({ session_id: activeSessionId, agent }),
+      })
+      showToast(`Saved to wiki: ${res.relative}${res.committed ? " (committed)" : ""}`)
+    } catch (e: any) {
+      showToast(`Wiki export failed: ${e.message}`)
+    } finally {
+      setWikiBusy(false)
+    }
+  }, [activeSessionId, wikiBusy, showToast])
+
   // ── Export to markdown ───────────────────────────────────────────────────
   const doExport = useCallback(() => {
     const scope = selectedIds.size > 0 ? blocks.filter(b => selectedIds.has(b.id)) : blocks
@@ -652,6 +676,21 @@ export default function Page() {
           >
             Export Markdown
           </button>
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-neutral-500">Save to wiki:</span>
+            {["atlas", "coach", "engineer", "vault"].map(a => (
+              <button
+                key={a}
+                data-testid={`wiki-export-${a}`}
+                disabled={!activeSessionId || wikiBusy}
+                onClick={() => exportToWiki(a)}
+                className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 hover:bg-neutral-100 disabled:opacity-40"
+                title={`Write session as markdown to ~/.openfang/wikis/${a}/pages/`}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
           <div className="text-[10px] text-neutral-500">
             Selection: {selectedIds.size} / {blocks.length}
           </div>
