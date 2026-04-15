@@ -76,19 +76,33 @@ export default function Page() {
 
   const undoStackRef = useRef<UndoEntry[]>([])
 
-  // Drag state
+  // Drag state (client-space delta based, so panning doesn't break drag)
   const dragStateRef = useRef<{
     blockId: string | null
-    offsetX: number
-    offsetY: number
-    startX: number
-    startY: number
+    startBlockX: number
+    startBlockY: number
+    startClientX: number
+    startClientY: number
     moved: boolean
-  }>({ blockId: null, offsetX: 0, offsetY: 0, startX: 0, startY: 0, moved: false })
+  }>({ blockId: null, startBlockX: 0, startBlockY: 0, startClientX: 0, startClientY: 0, moved: false })
 
   // Connection drag state
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null)
   const [connectEndPos, setConnectEndPos] = useState<{ x: number; y: number } | null>(null)
+
+  // Viewport pan (canvas-space translation)
+  const [viewport, setViewport] = useState<{ tx: number; ty: number }>({ tx: 0, ty: 0 })
+  const panStateRef = useRef<{
+    active: boolean
+    startClientX: number
+    startClientY: number
+    startTx: number
+    startTy: number
+    moved: boolean
+  }>({ active: false, startClientX: 0, startClientY: 0, startTx: 0, startTy: 0, moved: false })
+
+  // Sidebar collapse
+  const [sidebarOpen, setSidebarOpen] = useState(true)
 
   const canvasRef = useRef<HTMLDivElement>(null)
 
@@ -236,33 +250,47 @@ export default function Page() {
     e.stopPropagation()
     dragStateRef.current = {
       blockId: block.id,
-      offsetX: e.clientX - block.x,
-      offsetY: e.clientY - block.y,
-      startX: e.clientX,
-      startY: e.clientY,
+      startBlockX: block.x,
+      startBlockY: block.y,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
       moved: false,
     }
   }
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     const ds = dragStateRef.current
+    const ps = panStateRef.current
     if (ds.blockId) {
-      const dx = e.clientX - ds.startX
-      const dy = e.clientY - ds.startY
+      const dx = e.clientX - ds.startClientX
+      const dy = e.clientY - ds.startClientY
       if (!ds.moved && Math.abs(dx) + Math.abs(dy) > 3) ds.moved = true
       if (ds.moved) {
-        const newX = e.clientX - ds.offsetX
-        const newY = e.clientY - ds.offsetY
+        const newX = ds.startBlockX + dx
+        const newY = ds.startBlockY + dy
         setBlocks(prev => prev.map(b => (b.id === ds.blockId ? { ...b, x: newX, y: newY } : b)))
+      }
+    } else if (ps.active) {
+      const dx = e.clientX - ps.startClientX
+      const dy = e.clientY - ps.startClientY
+      if (!ps.moved && Math.abs(dx) + Math.abs(dy) > 3) ps.moved = true
+      if (ps.moved) {
+        setViewport({ tx: ps.startTx + dx, ty: ps.startTy + dy })
       }
     } else if (connectingFrom) {
       const rect = canvasRef.current?.getBoundingClientRect()
-      if (rect) setConnectEndPos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+      if (rect) {
+        setConnectEndPos({
+          x: e.clientX - rect.left - viewport.tx,
+          y: e.clientY - rect.top - viewport.ty,
+        })
+      }
     }
-  }, [connectingFrom])
+  }, [connectingFrom, viewport.tx, viewport.ty])
 
   const onMouseUp = useCallback((e: React.MouseEvent) => {
     const ds = dragStateRef.current
+    const ps = panStateRef.current
     if (ds.blockId && ds.moved) {
       const b = blocks.find(x => x.id === ds.blockId)
       if (b) persistBlockPos(b.id, b.x, b.y)
@@ -282,7 +310,16 @@ export default function Page() {
         return next
       })
     }
-    dragStateRef.current = { blockId: null, offsetX: 0, offsetY: 0, startX: 0, startY: 0, moved: false }
+    dragStateRef.current = { blockId: null, startBlockX: 0, startBlockY: 0, startClientX: 0, startClientY: 0, moved: false }
+
+    // End pan — if no move, treat as background click (deselect)
+    if (ps.active) {
+      if (!ps.moved) {
+        setSelectedIds(new Set())
+        canvasInputRef.current?.blur()
+      }
+      panStateRef.current = { active: false, startClientX: 0, startClientY: 0, startTx: 0, startTy: 0, moved: false }
+    }
 
     if (connectingFrom) {
       // drop target: find block under cursor
@@ -300,13 +337,26 @@ export default function Page() {
     }
   }, [blocks, persistBlockPos, connectingFrom, activeSessionId, showToast])
 
-  // ── Canvas background click: deselect ────────────────────────────────────
+  // ── Canvas background: start pan (also deselects if no movement) ─────────
   const onCanvasMouseDown = (e: React.MouseEvent) => {
-    if (e.target === canvasRef.current || (e.target as HTMLElement).dataset.canvasBg === "true") {
-      setSelectedIds(new Set())
-      canvasInputRef.current?.blur()
+    const isBg =
+      e.target === canvasRef.current ||
+      (e.target as HTMLElement).dataset.canvasBg === "true"
+    if (!isBg) return
+    panStateRef.current = {
+      active: true,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startTx: viewport.tx,
+      startTy: viewport.ty,
+      moved: false,
     }
   }
+
+  const recenterViewport = useCallback(() => {
+    setViewport({ tx: 0, ty: 0 })
+    showToast("Recentered")
+  }, [showToast])
 
   // ── Double click block: edit ─────────────────────────────────────────────
   const onBlockDoubleClick = (e: React.MouseEvent, block: Block) => {
@@ -499,9 +549,23 @@ export default function Page() {
   }, [blocks])
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-neutral-50 text-neutral-900">
+    <div className="relative flex h-screen w-screen overflow-hidden bg-neutral-50 text-neutral-900">
+      {/* Sidebar toggle (always visible) */}
+      <button
+        data-testid="sidebar-toggle"
+        onClick={() => setSidebarOpen(v => !v)}
+        style={{ left: sidebarOpen ? "15rem" : "0.5rem" }}
+        className="absolute top-2 z-50 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs shadow hover:bg-neutral-100 transition-all duration-200"
+        title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+      >
+        {sidebarOpen ? "‹" : "›"}
+      </button>
       {/* Left Sidebar */}
-      <aside className="flex h-full w-60 flex-col border-r border-neutral-200 bg-white">
+      <aside
+        className={`flex h-full flex-col border-r border-neutral-200 bg-white transition-all duration-200 ${
+          sidebarOpen ? "w-60" : "w-0 overflow-hidden border-r-0"
+        }`}
+      >
         <div className="border-b border-neutral-200 p-3">
           <button
             data-testid="new-session"
@@ -563,11 +627,20 @@ export default function Page() {
           onMouseDown={onCanvasMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
-          className="relative h-full w-full select-none"
-          style={{ cursor: connectingFrom ? "crosshair" : "default" }}
+          className="relative h-full w-full select-none touch-none"
+          style={{ cursor: connectingFrom ? "crosshair" : panStateRef.current.active ? "grabbing" : "grab" }}
         >
+          <div
+            data-canvas-bg="true"
+            style={{
+              position: "absolute",
+              inset: 0,
+              transform: `translate(${viewport.tx}px, ${viewport.ty}px)`,
+              transformOrigin: "0 0",
+            }}
+          >
           {/* SVG for connections */}
-          <svg className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 1 }}>
+          <svg className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 1, overflow: "visible" }}>
             {connections.map(c => {
               const from = blocksById[c.from_block_id]
               const to = blocksById[c.to_block_id]
@@ -685,6 +758,16 @@ export default function Page() {
               </div>
             )
           })}
+          </div>
+          {/* Recenter button */}
+          <button
+            data-testid="recenter-btn"
+            onClick={recenterViewport}
+            className="absolute right-2 top-2 z-20 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs shadow hover:bg-neutral-100"
+            title="Recenter canvas"
+          >
+            ⊙ Center
+          </button>
         </div>
 
         {/* Augment prompt */}
