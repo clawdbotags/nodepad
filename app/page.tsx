@@ -177,9 +177,16 @@ export default function Page() {
     setBlocks(prev => [...prev, n])
   }, [activeSessionId, blocks.length])
 
-  // ── Delete selected blocks ───────────────────────────────────────────────
-  const deleteSelected = useCallback(async () => {
+  // ── Delete selected blocks (with confirm) ────────────────────────────────
+  const deleteSelected = useCallback(async (skipConfirm = false) => {
     if (selectedIds.size === 0) return
+    const n = selectedIds.size
+    if (!skipConfirm) {
+      const ok = typeof window !== "undefined"
+        ? window.confirm(`Delete ${n} selected block${n === 1 ? "" : "s"}?`)
+        : true
+      if (!ok) return
+    }
     const ids = Array.from(selectedIds)
     for (const id of ids) {
       await api(`/api/notes/${id}`, { method: "DELETE" })
@@ -188,6 +195,33 @@ export default function Page() {
     setConnections(prev => prev.filter(c => !selectedIds.has(c.from_block_id) && !selectedIds.has(c.to_block_id)))
     setSelectedIds(new Set())
   }, [selectedIds])
+
+  // ── Delete session ──────────────────────────────────────────────────────
+  const deleteSession = useCallback(async (id: string) => {
+    const s = sessions.find(x => x.id === id)
+    const label = s?.name || id
+    const ok = typeof window !== "undefined"
+      ? window.confirm(`Delete canvas "${label}" and all its blocks? This cannot be undone.`)
+      : true
+    if (!ok) return
+    try {
+      await api(`/api/sessions/${id}`, { method: "DELETE" })
+      setSessions(prev => {
+        const next = prev.filter(x => x.id !== id)
+        // If we deleted the active one, switch to first remaining (or clear)
+        if (id === activeSessionId) {
+          setActiveSessionId(next[0]?.id || "")
+          setBlocks([])
+          setConnections([])
+          setSelectedIds(new Set())
+        }
+        return next
+      })
+      showToast("Canvas deleted")
+    } catch (e: any) {
+      showToast(`Delete failed: ${e.message}`)
+    }
+  }, [sessions, activeSessionId, showToast])
 
   // ── Update block position (after drag) ───────────────────────────────────
   const persistBlockPos = useCallback(async (id: string, x: number, y: number) => {
@@ -400,16 +434,23 @@ export default function Page() {
     zoomAt(1 / 1.2, rect.width / 2, rect.height / 2)
   }, [zoomAt])
 
-  // Wheel zoom (Ctrl+wheel or trackpad pinch — browsers emit wheel with ctrlKey)
+  // Wheel zoom (Ctrl+wheel / pinch) OR pan (plain wheel / two-finger scroll on trackpad / iPad).
+  // iPad Safari + desktop trackpads both emit wheel with deltaX/deltaY for two-finger drags.
   const onCanvasWheel = useCallback((e: React.WheelEvent) => {
-    if (!e.ctrlKey && !e.metaKey) return
-    e.preventDefault()
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
-    const cx = e.clientX - rect.left
-    const cy = e.clientY - rect.top
-    const factor = Math.exp(-e.deltaY * 0.01)
-    zoomAt(factor, cx, cy)
+    if (e.ctrlKey || e.metaKey) {
+      // pinch/zoom
+      e.preventDefault()
+      const cx = e.clientX - rect.left
+      const cy = e.clientY - rect.top
+      const factor = Math.exp(-e.deltaY * 0.01)
+      zoomAt(factor, cx, cy)
+    } else {
+      // two-finger pan (iPad / trackpad)
+      e.preventDefault()
+      setViewport(v => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }))
+    }
   }, [zoomAt])
 
   // ── Double click block: edit ─────────────────────────────────────────────
@@ -430,6 +471,15 @@ export default function Page() {
         if (!isInput) {
           e.preventDefault()
           doUndo()
+          return
+        }
+      }
+
+      // Ctrl/Cmd+A — select all blocks
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        if (!isInput) {
+          e.preventDefault()
+          setSelectedIds(new Set(blocks.map(b => b.id)))
           return
         }
       }
@@ -464,7 +514,7 @@ export default function Page() {
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIds, augmentOpen, activeSessionId, editingId, deleteSelected])
+  }, [selectedIds, augmentOpen, activeSessionId, editingId, deleteSelected, blocks])
 
   // ── Undo ─────────────────────────────────────────────────────────────────
   const doUndo = useCallback(async () => {
@@ -661,17 +711,30 @@ export default function Page() {
         </div>
         <div className="flex-1 overflow-y-auto p-2">
           {sessions.map(s => (
-            <button
+            <div
               key={s.id}
-              data-testid={`session-item-${s.id}`}
-              onClick={() => setActiveSessionId(s.id)}
-              className={`mb-1 block w-full truncate rounded px-2 py-1.5 text-left text-sm ${
+              className={`mb-1 flex items-stretch rounded text-sm ${
                 s.id === activeSessionId ? "bg-neutral-200" : "hover:bg-neutral-100"
               }`}
-              title={s.name}
             >
-              {s.name}
-            </button>
+              <button
+                data-testid={`session-item-${s.id}`}
+                onClick={() => setActiveSessionId(s.id)}
+                className="min-w-0 flex-1 truncate px-2 py-1.5 text-left"
+                title={s.name}
+              >
+                {s.name}
+              </button>
+              <button
+                data-testid={`session-delete-${s.id}`}
+                onClick={e => { e.stopPropagation(); deleteSession(s.id) }}
+                className="opacity-0 group-hover:opacity-100 hover:opacity-100 px-2 text-neutral-400 hover:text-red-600 transition-opacity"
+                title="Delete canvas"
+                style={{ opacity: 1 }}
+              >
+                ×
+              </button>
+            </div>
           ))}
         </div>
         <div className="border-t border-neutral-200 p-3 space-y-2">
