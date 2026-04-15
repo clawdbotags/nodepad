@@ -64,15 +64,11 @@
 html, body {
   margin: 0;
   padding: 0;
-  overflow: hidden;
-  height: var(--app-height, 100dvh);
+  height: 100%;
   width: 100%;
-}
-
-body {
+  overflow: hidden;
   overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
-  /* touch-action: none is on the canvas element only, not body — blocking it here kills all touch on iPad */
 }
 
 /* ── Custom scrollbar ─────────────────────────────────────────────────────── */
