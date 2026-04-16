@@ -12,15 +12,17 @@ const ENV_FILE = path.join(os.homedir(), ".openfang", ".env")
 let _matrixTokenCache: string | null = null
 async function getMatrixToken(): Promise<string | null> {
   if (_matrixTokenCache) return _matrixTokenCache
-  // Try env first (free if it's there), then fall back to .env file.
-  if (process.env.MATRIX_ACCESS_TOKEN) {
-    _matrixTokenCache = process.env.MATRIX_ACCESS_TOKEN
+  // Send AS Albert (not the OpenFang bot) so the message actually triggers
+  // the engineer agent instead of being filtered as a bot/system message.
+  // Try env first, then ~/.openfang/.env.
+  if (process.env.MATRIX_USER_TOKEN) {
+    _matrixTokenCache = process.env.MATRIX_USER_TOKEN
     return _matrixTokenCache
   }
   try {
     const text = await fs.readFile(ENV_FILE, "utf8")
     for (const line of text.split("\n")) {
-      const m = /^\s*MATRIX_ACCESS_TOKEN\s*=\s*(.+?)\s*$/.exec(line)
+      const m = /^\s*MATRIX_USER_TOKEN\s*=\s*(.+?)\s*$/.exec(line)
       if (m) {
         _matrixTokenCache = m[1].replace(/^['"]|['"]$/g, "")
         return _matrixTokenCache
@@ -176,11 +178,10 @@ export async function POST(req: Request) {
 
     // Fire-and-(mostly)-forget Matrix push to engineer's room.
     const matrixLines = [
-      `📩 Albert reported a nodepad ${meta.mode || "share"}.`,
-      meta.note ? `Note: ${meta.note}` : null,
-      meta.prompt ? `Prompt: ${meta.prompt}` : null,
-      `Path: ~/.openfang/workspaces/engineer/incoming/${dirName}`,
-      `Read README.md and the before/after PNGs to investigate.`,
+      `engineer: nodepad report (${meta.mode || "share"}).`,
+      meta.note ? `What's wrong: ${meta.note}` : null,
+      meta.prompt ? `Augment prompt was: ${meta.prompt}` : null,
+      `Read ~/.openfang/workspaces/engineer/incoming/${dirName}/README.md plus before.png and after.png.`,
     ].filter(Boolean) as string[]
     const notified = await notifyEngineerMatrix(matrixLines.join("\n"))
 
