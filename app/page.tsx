@@ -224,11 +224,18 @@ function bspWeight(n: BSPNode): number {
   return n.type === "leaf" ? 1 : bspWeight(n.left) + bspWeight(n.right)
 }
 
-function TiledView({ blocks, connections, selectedIds, onSelect }: {
+function TiledView({ blocks, connections, selectedIds, onSelect,
+  editingId, editingText, onStartEdit, onChangeEdit, onSaveEdit, onCancelEdit }: {
   blocks: Block[]
   connections: Connection[]
   selectedIds: Set<string>
   onSelect: (id: string, multi: boolean) => void
+  editingId: string | null
+  editingText: string
+  onStartEdit: (id: string, text: string) => void
+  onChangeEdit: (text: string) => void
+  onSaveEdit: () => void
+  onCancelEdit: () => void
 }) {
   const tree = useMemo(() => buildBSP(blocks.map(b => b.id)), [blocks])
   const byId = useMemo(() => { const m: Record<string, Block> = {}; for (const b of blocks) m[b.id] = b; return m }, [blocks])
@@ -240,6 +247,7 @@ function TiledView({ blocks, connections, selectedIds, onSelect }: {
       if (!b) return null
       const isSel = selectedIds.has(b.id)
       const isAI = !!b.is_ai_generated
+      const isEditing = editingId === b.id
       // Connection count for this block
       const connCount = connections.filter(c => c.from_block_id === b.id || c.to_block_id === b.id).length
       return (
@@ -248,21 +256,44 @@ function TiledView({ blocks, connections, selectedIds, onSelect }: {
           className="flex flex-1 p-0.5 overflow-hidden min-w-0 min-h-0"
         >
           <div
-            onClick={e => onSelect(b.id, e.ctrlKey || e.metaKey)}
-            className={`flex flex-col flex-1 overflow-hidden bg-card/80 transition-all cursor-pointer hover:bg-card ${
-              isSel ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]" : ""
-            }`}
+            onClick={e => { if (isEditing) return; onSelect(b.id, e.ctrlKey || e.metaKey) }}
+            onDoubleClick={e => { e.stopPropagation(); onStartEdit(b.id, b.text) }}
+            className={`flex flex-col flex-1 overflow-hidden bg-card/80 transition-all hover:bg-card ${
+              isEditing ? "cursor-text" : "cursor-pointer"
+            } ${isSel ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]" : ""}`}
             style={{
               borderLeft: `3px solid ${isAI ? "var(--primary)" : "rgba(255,255,255,0.08)"}`,
             }}
           >
             <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
-              <div className="whitespace-pre-wrap break-words text-sm text-foreground/90 leading-relaxed">
-                {b.text}
-              </div>
+              {isEditing ? (
+                <textarea
+                  data-testid={`tile-edit-${b.id}`}
+                  autoFocus
+                  value={editingText}
+                  onChange={e => onChangeEdit(e.target.value)}
+                  onBlur={onSaveEdit}
+                  onClick={e => e.stopPropagation()}
+                  onMouseDown={e => e.stopPropagation()}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault()
+                      onSaveEdit()
+                    } else if (e.key === "Escape") {
+                      e.preventDefault()
+                      onCancelEdit()
+                    }
+                  }}
+                  className="w-full h-full min-h-[80px] resize-none bg-transparent outline-none text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap break-words"
+                />
+              ) : (
+                <div className="whitespace-pre-wrap break-words text-sm text-foreground/90 leading-relaxed">
+                  {b.text}
+                </div>
+              )}
             </div>
             <div className="flex items-center justify-between px-3 py-1.5 border-t border-white/5 font-mono text-[8px] font-bold uppercase tracking-wider text-muted-foreground/40">
-              <span>{isAI ? "ai" : "user"}</span>
+              <span>{isEditing ? "editing — ⌘↵ save · esc cancel" : (isAI ? "ai" : "user")}</span>
               {connCount > 0 && <span>{connCount} link{connCount !== 1 ? "s" : ""}</span>}
             </div>
           </div>
@@ -1699,6 +1730,12 @@ export default function Page() {
                 return next
               })
             }}
+            editingId={editingId}
+            editingText={editingText}
+            onStartEdit={(id, text) => { setEditingId(id); setEditingText(text) }}
+            onChangeEdit={setEditingText}
+            onSaveEdit={saveEdit}
+            onCancelEdit={() => { setEditingId(null); setEditingText("") }}
           />
         )}
 
