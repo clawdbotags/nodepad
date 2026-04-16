@@ -238,7 +238,7 @@ function bspWeight(n: BSPNode): number {
 
 function TiledView({ blocks, connections, selectedIds, onSelect,
   editingId, editingText, onStartEdit, onChangeEdit, onSaveEdit, onCancelEdit,
-  onOpenDrawing }: {
+  onOpenDrawing, isMobile }: {
   blocks: Block[]
   connections: Connection[]
   selectedIds: Set<string>
@@ -250,6 +250,7 @@ function TiledView({ blocks, connections, selectedIds, onSelect,
   onSaveEdit: () => void
   onCancelEdit: () => void
   onOpenDrawing: (id: string) => void
+  isMobile?: boolean
 }) {
   const tree = useMemo(() => buildBSP(blocks.map(b => b.id)), [blocks])
   const byId = useMemo(() => { const m: Record<string, Block> = {}; for (const b of blocks) m[b.id] = b; return m }, [blocks])
@@ -354,6 +355,95 @@ function TiledView({ blocks, connections, selectedIds, onSelect,
   if (blocks.length === 0) {
     return <div className="flex items-center justify-center h-full font-mono text-[10px] uppercase tracking-[0.35em] text-muted-foreground/35">No blocks</div>
   }
+
+  // Mobile: single-column scroll list. BSP gives nice mosaics on wide screens
+  // but at <400px each cell collapses to ~95px wide and text wraps to one
+  // word per line. Vertical scroll is the only sane phone layout.
+  if (isMobile) {
+    return (
+      <div className="h-full w-full overflow-y-auto overflow-x-hidden bg-[#020202] custom-scrollbar">
+        <ul className="flex flex-col gap-1.5 p-2">
+          {blocks.map(b => {
+            const isSel = selectedIds.has(b.id)
+            const isAI = !!b.is_ai_generated
+            const isEditing = editingId === b.id
+            const isDrawing = b.kind === "drawing"
+            const connCount = connections.filter(c => c.from_block_id === b.id || c.to_block_id === b.id).length
+            return (
+              <li
+                key={b.id}
+                data-testid={`tile-${b.id}`}
+                data-block-kind={b.kind || "text"}
+                onClick={e => { if (isEditing) return; onSelect(b.id, e.ctrlKey || e.metaKey) }}
+                onDoubleClick={e => {
+                  e.stopPropagation()
+                  if (isDrawing) { onOpenDrawing(b.id); return }
+                  onStartEdit(b.id, b.text)
+                }}
+                className={`relative flex flex-col rounded-md bg-card/80 transition-all hover:bg-card overflow-hidden ${
+                  isSel ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]" : ""
+                }`}
+                style={{
+                  borderLeft: `3px solid ${isAI ? "var(--primary)" : "rgba(255,255,255,0.08)"}`,
+                  minHeight: isDrawing ? 220 : 96,
+                }}
+              >
+                {isDrawing ? (
+                  <div className="relative" style={{ minHeight: 220 }}>
+                    <DrawingPreview scene={parseScene(b.text)} />
+                    <button
+                      data-testid={`tile-drawing-expand-${b.id}`}
+                      onClick={e => { e.stopPropagation(); onOpenDrawing(b.id) }}
+                      className="absolute right-1.5 top-1.5 z-10 rounded-sm bg-black/70 px-2 py-1 font-mono text-[11px] text-white/80 hover:bg-black/90 hover:text-white transition-colors"
+                      title="Open editor"
+                    >
+                      ⛶
+                    </button>
+                  </div>
+                ) : (
+                  <div className="px-3 py-3">
+                    {isEditing ? (
+                      <textarea
+                        data-testid={`tile-edit-${b.id}`}
+                        autoFocus
+                        value={editingText}
+                        onChange={e => onChangeEdit(e.target.value)}
+                        onBlur={onSaveEdit}
+                        onClick={e => e.stopPropagation()}
+                        onKeyDown={e => {
+                          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                            e.preventDefault(); onSaveEdit()
+                          } else if (e.key === "Escape") {
+                            e.preventDefault(); onCancelEdit()
+                          }
+                        }}
+                        className="w-full min-h-[80px] resize-y bg-transparent outline-none text-[15px] text-foreground/90 leading-relaxed whitespace-pre-wrap break-words"
+                      />
+                    ) : (
+                      <div className="whitespace-pre-wrap break-words text-[15px] text-foreground/90 leading-relaxed">
+                        {b.text}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="flex items-center justify-between px-3 py-1.5 border-t border-white/5 font-mono text-[9px] font-bold uppercase tracking-wider text-muted-foreground/50">
+                  <span>
+                    {isEditing
+                      ? "editing — ⌘↵ save · esc cancel"
+                      : isDrawing
+                        ? (isAI ? "ai · sketch" : "sketch")
+                        : (isAI ? "ai" : "user")}
+                  </span>
+                  {connCount > 0 && <span>{connCount} link{connCount !== 1 ? "s" : ""}</span>}
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    )
+  }
+
   return <div className="flex h-full w-full overflow-hidden bg-[#020202]">{renderNode(tree)}</div>
 }
 
@@ -1833,9 +1923,9 @@ export default function Page() {
               </h2>
             </div>
             <button
-              data-testid="sidebar-toggle"
+              data-testid="sidebar-close"
               onClick={() => setSidebarOpen(false)}
-              className="p-1 px-1.5 hover:bg-white/5 rounded-sm transition-colors text-muted-foreground hover:text-foreground font-mono text-xs"
+              className="p-2 hover:bg-white/5 rounded-sm transition-colors text-muted-foreground hover:text-foreground font-mono text-sm"
             >
               ‹
             </button>
@@ -1891,6 +1981,7 @@ export default function Page() {
               data-testid="augment-btn"
               disabled={!activeSessionId || blocks.length === 0 || augmentOpen}
               onClick={() => {
+                if (isMobile) setSidebarOpen(false)
                 setAugmentOpen(true)
                 setAugmentError(null)
                 setTimeout(() => augmentInputRef.current?.focus(), 10)
@@ -1940,15 +2031,18 @@ export default function Page() {
         </div>
       </aside>
 
-      {/* Sidebar open button (visible when collapsed) */}
+      {/* Sidebar open button (visible when collapsed). Bigger tap target on
+          mobile so it sits comfortably in the top bar's left padding slot. */}
       {!sidebarOpen && (
         <button
           data-testid="sidebar-toggle"
           onClick={() => setSidebarOpen(true)}
-          className="absolute left-2 top-2 z-50 p-1.5 rounded-sm bg-white/5 hover:bg-white/10 border border-white/10 text-muted-foreground hover:text-foreground transition-all"
+          className={`absolute z-50 rounded-sm bg-white/5 hover:bg-white/10 border border-white/10 text-muted-foreground hover:text-foreground transition-all ${
+            isMobile ? "left-2 top-1.5 h-9 w-9 flex items-center justify-center" : "left-2 top-2 p-1.5"
+          }`}
           title="Show sidebar"
         >
-          <span className="font-mono text-xs">›</span>
+          <span className={`font-mono ${isMobile ? "text-base" : "text-xs"}`}>›</span>
         </button>
       )}
 
@@ -1956,25 +2050,55 @@ export default function Page() {
           real sibling (shrink-0) and not an absolute overlay. Otherwise it
           crops the bottom of tiled/graph/canvas views behind it. */}
       <main className="relative flex-1 h-full overflow-hidden flex flex-col min-h-0">
+        {/* Mobile top bar — proper layout slot, not floating. Holds view
+            toggle + active session pill. Floating bottom-left pill on
+            desktop is unusable on phones (overlaps tiles). */}
+        {isMobile && (
+          <div
+            data-testid="mobile-top-bar"
+            className="shrink-0 flex items-center gap-2 px-2 pl-12 pr-2 py-1.5 border-b border-white/10 bg-black/70 backdrop-blur-md"
+          >
+            <div data-testid="view-toggle" className="flex items-center gap-1 rounded-sm border border-white/10 bg-black/40 px-1 py-1">
+              {(["tiled", "graph"] as ViewMode[]).map(m => (
+                <button
+                  key={m}
+                  onClick={() => setViewMode(m)}
+                  className={`rounded-sm px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
+                    viewMode === m
+                      ? "bg-primary/15 border border-primary/40 text-primary"
+                      : "text-white/60 hover:bg-white/[0.06] hover:text-white/85 border border-transparent"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <div className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 truncate max-w-[120px]">
+              {sessions.find(s => s.id === activeSessionId)?.name || ""}
+            </div>
+          </div>
+        )}
         {/* Content area (views + their overlays) */}
         <div className="relative flex-1 min-h-0 overflow-hidden">
-        {/* View toggle — drops Canvas on mobile (drag/pan/zoom is unusable on
-            phones; mobile users get tiled + graph only). */}
-        <div className="absolute left-3 bottom-3 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
-          {(isMobile ? (["tiled", "graph"] as ViewMode[]) : (["canvas", "tiled", "graph"] as ViewMode[])).map(m => (
-            <button
-              key={m}
-              onClick={() => setViewMode(m)}
-              className={`rounded-sm px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider transition-all ${
-                viewMode === m
-                  ? "bg-primary/12 border border-primary/35 text-primary shadow-[0_0_0_1px_var(--primary)]"
-                  : "text-white/55 hover:bg-white/[0.06] hover:text-white/80 border border-transparent"
-              }`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        {/* Desktop view toggle — drops Canvas on mobile (drag/pan/zoom is
+            unusable on phones; mobile users get tiled + graph in top bar). */}
+        {!isMobile && (
+          <div data-testid="view-toggle" className="absolute left-3 bottom-3 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
+            {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
+              <button
+                key={m}
+                onClick={() => setViewMode(m)}
+                className={`rounded-sm px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider transition-all ${
+                  viewMode === m
+                    ? "bg-primary/12 border border-primary/35 text-primary shadow-[0_0_0_1px_var(--primary)]"
+                    : "text-white/55 hover:bg-white/[0.06] hover:text-white/80 border border-transparent"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Tiled view */}
         {viewMode === "tiled" && (
@@ -1996,6 +2120,7 @@ export default function Page() {
             onSaveEdit={saveEdit}
             onCancelEdit={() => { setEditingId(null); setEditingText("") }}
             onOpenDrawing={id => setDrawingOverlayId(id)}
+            isMobile={isMobile}
           />
         )}
 
@@ -2334,8 +2459,16 @@ export default function Page() {
 
         {/* Augment prompt */}
         {augmentOpen && (
-          <div className="absolute inset-x-0 bottom-4 z-40 flex justify-center px-2">
-            <div className="flex w-[600px] max-w-full flex-col gap-3 rounded-sm border border-white/10 bg-black/85 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
+          <>
+            {/* Modal backdrop — clicking it closes the dialog. Above sidebar
+                so the dialog isn't covered when both happen to be open. */}
+            <div
+              data-testid="augment-backdrop"
+              className="fixed inset-0 z-[55] bg-black/60 backdrop-blur-sm"
+              onClick={() => setAugmentOpen(false)}
+            />
+          <div className="fixed inset-x-0 bottom-4 z-[60] flex justify-center px-2">
+            <div className="flex w-[600px] max-w-full flex-col gap-3 rounded-sm border border-white/10 bg-black/90 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
               <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-white/45">
                 {(() => {
                   const verb = augmentRearrange ? "Rearrange" : "Augment"
@@ -2459,18 +2592,25 @@ export default function Page() {
               </div>
             </div>
           </div>
+          </>
         )}
         </div>
         {/* /Content area */}
 
         {/* Bottom text input (v1 VimInput style) — shrink-0 sibling of the
-            content wrapper so it never overlays the views. */}
-        <div className="relative shrink-0 z-30 w-full border-t border-white/20 bg-black/80 backdrop-blur-3xl px-6 py-5 flex items-center gap-4 transition-all duration-300 focus-within:border-primary/40">
+            content wrapper so it never overlays the views. On mobile we trim
+            chrome (no "Entry" label, no ⌘Z hint, tighter padding) so the
+            input + mic + Submit all fit in 390px. */}
+        <div data-testid="entry-bar" className={`relative shrink-0 z-30 w-full border-t border-white/20 bg-black/80 backdrop-blur-3xl flex items-center transition-all duration-300 focus-within:border-primary/40 ${
+          isMobile ? "px-2 py-2 gap-2" : "px-6 py-5 gap-4"
+        }`}>
           <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent" />
-          <div className="flex items-center gap-3 flex-1">
-            <div className="font-mono text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] select-none">
-              Entry
-            </div>
+          <div className={`flex items-center flex-1 min-w-0 ${isMobile ? "gap-2" : "gap-3"}`}>
+            {!isMobile && (
+              <div className="font-mono text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] select-none">
+                Entry
+              </div>
+            )}
             <input
               ref={canvasInputRef}
               data-testid="canvas-input"
@@ -2485,16 +2625,17 @@ export default function Page() {
                   }
                 }
               }}
-              placeholder="Capture something..."
-              className="flex-1 bg-transparent font-mono text-sm tracking-tight text-white outline-none placeholder:text-white/35"
-              autoFocus
+              placeholder={isMobile ? "Capture…" : "Capture something..."}
+              className={`flex-1 min-w-0 bg-transparent font-mono tracking-tight text-white outline-none placeholder:text-white/35 ${isMobile ? "text-base" : "text-sm"}`}
+              autoFocus={!isMobile}
             />
           </div>
-          <div className="flex items-center gap-3">
-            {/* Icon cluster — same h-7 minimal-pill treatment as the zoom toolbar.
+          <div className={`flex items-center shrink-0 ${isMobile ? "gap-1.5" : "gap-3"}`}>
+            {/* Icon cluster — same minimal-pill treatment as the zoom toolbar.
                 Mic toggles voice input → /api/transcribe (Whisper). Sketch creates
                 a new drawing block + opens the editor. Both are intentionally
-                icon-only so they read as utilities, not actions. */}
+                icon-only so they read as utilities, not actions. Bigger tap
+                targets on mobile (h-11 = 44px Apple HIG minimum). */}
             <div className="flex items-center rounded-sm border border-white/10 bg-white/[0.03]">
               <button
                 data-testid="voice-input-btn"
@@ -2503,7 +2644,9 @@ export default function Page() {
                 title={recording ? "Stop & transcribe" : (transcribing ? "Transcribing…" : "Voice input")}
                 aria-pressed={recording}
                 aria-label="Voice input"
-                className={`flex h-7 w-8 items-center justify-center transition-colors ${
+                className={`flex items-center justify-center transition-colors ${
+                  isMobile ? "h-11 w-11" : "h-7 w-8"
+                } ${
                   recording
                     ? "text-red-400 hover:text-red-300"
                     : transcribing
@@ -2512,28 +2655,30 @@ export default function Page() {
                 } disabled:opacity-30 disabled:hover:bg-transparent`}
               >
                 {recording ? (
-                  <span className="relative flex h-2.5 w-2.5">
+                  <span className={`relative flex ${isMobile ? "h-3.5 w-3.5" : "h-2.5 w-2.5"}`}>
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-400" />
+                    <span className={`relative inline-flex rounded-full bg-red-400 ${isMobile ? "h-3.5 w-3.5" : "h-2.5 w-2.5"}`} />
                   </span>
                 ) : (
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width={isMobile ? "20" : "13"} height={isMobile ? "20" : "13"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="9" y="3" width="6" height="12" rx="3" />
                     <path d="M5 11a7 7 0 0 0 14 0" />
                     <line x1="12" y1="18" x2="12" y2="22" />
                   </svg>
                 )}
               </button>
-              <div className="h-4 w-px bg-white/10" />
+              <div className={`w-px bg-white/10 ${isMobile ? "h-6" : "h-4"}`} />
               <button
                 data-testid="new-drawing-btn"
                 onClick={createDrawingBlock}
                 disabled={!activeSessionId}
                 title="New drawing block"
                 aria-label="New drawing block"
-                className="flex h-7 w-8 items-center justify-center text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                className={`flex items-center justify-center text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-30 disabled:hover:bg-transparent transition-colors ${
+                  isMobile ? "h-11 w-11" : "h-7 w-8"
+                }`}
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width={isMobile ? "18" : "13"} height={isMobile ? "18" : "13"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 19l7-7 3 3-7 7-3-3z" />
                   <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
                   <path d="M2 2l7.586 7.586" />
@@ -2541,25 +2686,32 @@ export default function Page() {
                 </svg>
               </button>
             </div>
-            <div className="h-4 w-px bg-white/10" />
-            <div className="flex items-center gap-2">
-              <kbd className="flex h-5 items-center rounded border border-white/10 bg-white/5 px-1.5 font-mono text-[9px] text-white/60">
-                <span className="text-[11px] mr-1">⌘</span><span>Z</span>
-              </kbd>
-              <span className="text-[9px] font-mono font-bold text-white/55 uppercase tracking-tighter">Undo</span>
-            </div>
-            <div className="h-4 w-px bg-white/10" />
+            {!isMobile && (
+              <>
+                <div className="h-4 w-px bg-white/10" />
+                <div className="flex items-center gap-2">
+                  <kbd className="flex h-5 items-center rounded border border-white/10 bg-white/5 px-1.5 font-mono text-[9px] text-white/60">
+                    <span className="text-[11px] mr-1">⌘</span><span>Z</span>
+                  </kbd>
+                  <span className="text-[9px] font-mono font-bold text-white/55 uppercase tracking-tighter">Undo</span>
+                </div>
+                <div className="h-4 w-px bg-white/10" />
+              </>
+            )}
             <button
+              data-testid="entry-submit"
               onClick={() => {
                 if (inputText.trim()) {
                   createBlock(inputText)
                   setInputText("")
                 }
               }}
-              className="font-mono text-[10px] font-bold text-primary uppercase tracking-widest hover:brightness-125 transition-all active:scale-95 disabled:opacity-20"
+              className={`font-mono font-bold text-primary uppercase tracking-widest hover:brightness-125 transition-all active:scale-95 disabled:opacity-20 ${
+                isMobile ? "text-[12px] px-3 h-11 rounded-sm border border-primary/40 bg-primary/10" : "text-[10px]"
+              }`}
               disabled={!inputText.trim()}
             >
-              Submit
+              {isMobile ? "Send" : "Submit"}
             </button>
           </div>
         </div>
@@ -2611,20 +2763,24 @@ export default function Page() {
           />
         )}
 
-        {/* AI call/response debug log — right-side panel */}
-        <AILogPanel open={aiLogOpen} onClose={() => setAiLogOpen(false)} />
-        {/* Floating toggle pinned to right edge so it's always reachable */}
-        <button
-          data-testid="ai-log-toggle"
-          onClick={() => setAiLogOpen(o => !o)}
-          className={`fixed top-1/2 -translate-y-1/2 z-40 px-1.5 py-3 rounded-l-sm border border-r-0 border-white/10 bg-card/90 backdrop-blur-md font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-all ${
-            aiLogOpen ? "right-[440px]" : "right-0"
-          }`}
-          style={{ writingMode: "vertical-rl" }}
-          title={aiLogOpen ? "Close AI log" : "Open AI log"}
-        >
-          AI Log
-        </button>
+        {/* AI call/response debug log — right-side panel. Desktop only;
+            phones are not for debugging LLM calls. */}
+        {!isMobile && (
+          <>
+            <AILogPanel open={aiLogOpen} onClose={() => setAiLogOpen(false)} />
+            <button
+              data-testid="ai-log-toggle"
+              onClick={() => setAiLogOpen(o => !o)}
+              className={`fixed top-1/2 -translate-y-1/2 z-40 px-1.5 py-3 rounded-l-sm border border-r-0 border-white/10 bg-card/90 backdrop-blur-md font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-all ${
+                aiLogOpen ? "right-[440px]" : "right-0"
+              }`}
+              style={{ writingMode: "vertical-rl" }}
+              title={aiLogOpen ? "Close AI log" : "Open AI log"}
+            >
+              AI Log
+            </button>
+          </>
+        )}
       </main>
     </div>
   )
