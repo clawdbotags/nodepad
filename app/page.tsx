@@ -1988,17 +1988,9 @@ export default function Page() {
           </div>
         </div>}
 
-        {/* Report-to-engineer floating button (after augment) */}
-        {hasReportContext && !reportOpen && !augmentOpen && (
-          <button
-            data-testid="report-button"
-            onClick={() => setReportOpen(true)}
-            title="Report this augment to engineer"
-            className="absolute bottom-4 left-4 z-40 rounded-sm border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 backdrop-blur-md px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-200 transition-all active:scale-[0.98]"
-          >
-            Report to engineer
-          </button>
-        )}
+        {/* Report-to-engineer entry point lives in the sidebar only —
+            the floating overlay was blocking the view-mode toggle when
+            the sidebar was collapsed. */}
 
         {/* Report-to-engineer dialog */}
         {reportOpen && (
