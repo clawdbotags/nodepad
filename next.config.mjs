@@ -30,9 +30,10 @@ const nextConfig = {
             value: "strict-origin-when-cross-origin",
           },
           {
-            // Permissions policy — disable features the app doesn't use
+            // Permissions policy — voice input needs microphone on same-origin.
+            // Camera/geolocation stay disabled (unused).
             key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=()",
+            value: "camera=(), microphone=(self), geolocation=()",
           },
           {
             // Content Security Policy
