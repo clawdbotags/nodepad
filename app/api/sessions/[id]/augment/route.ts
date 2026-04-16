@@ -489,20 +489,30 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (mode === "structured") {
       const structured = await callLLMStructured(prompt, sourceBlocks, settings)
 
-      // Snapshot for undo
+      // Drawings in scope stay put — they're authored visual content, not text
+      // the LLM can regenerate. They still participate as multimodal context
+      // (handled in sourceBlocks above), and their connections to the outside
+      // world (and to surviving drawings) are preserved.
+      const deletableNotes = scopeNotes.filter(n => n.kind !== "drawing")
+      const deletableSet = new Set(deletableNotes.map(n => n.id))
+
+      // Snapshot for undo — only what we actually delete
       const snapshot = {
         mode: "structured" as const,
-        deleted_notes: scopeNotes,
-        deleted_connections: allConns.filter(c => scopeSet.has(c.from_block_id) || scopeSet.has(c.to_block_id)),
+        deleted_notes: deletableNotes,
+        deleted_connections: allConns.filter(c => deletableSet.has(c.from_block_id) || deletableSet.has(c.to_block_id)),
       }
 
-      // Delete scope notes + their connections (internal + external — structured replaces the whole scope)
+      // Delete scope notes (excluding drawings) + their connections.
+      // A connection only gets deleted if it touches a deletable block — so an
+      // arrow from a drawing to a surviving-outside-scope block stays intact.
       for (const c of allConns) {
-        if (scopeSet.has(c.from_block_id) || scopeSet.has(c.to_block_id)) deleteConnection(c.id)
+        if (deletableSet.has(c.from_block_id) || deletableSet.has(c.to_block_id)) deleteConnection(c.id)
       }
-      for (const n of scopeNotes) deleteNote(n.id)
+      for (const n of deletableNotes) deleteNote(n.id)
 
-      // Centroid for auto-layout fallback
+      // Centroid for auto-layout fallback. Use the full scope (including drawings)
+      // so new blocks land in the visual middle of what the user selected.
       const cx = scopeNotes.reduce((a, n) => a + n.x, 0) / scopeNotes.length
       const cy = scopeNotes.reduce((a, n) => a + n.y, 0) / scopeNotes.length
 
@@ -552,9 +562,19 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
     const newText = await callLLM(prompt, sourceBlocks, settings)
 
-    // Centroid position
-    const cx = scopeNotes.reduce((a, n) => a + n.x, 0) / scopeNotes.length
-    const cy = scopeNotes.reduce((a, n) => a + n.y, 0) / scopeNotes.length
+    // Same drawing-preservation rule as structured: drawings in scope stay put.
+    // They served as visual context for the LLM (via sourceBlocks) but never
+    // get destroyed. Connection rewiring + deletion only operates on the
+    // text/task blocks the LLM is actually replacing.
+    const deletableNotes = scopeNotes.filter(n => n.kind !== "drawing")
+    const deletableSet = new Set(deletableNotes.map(n => n.id))
+
+    // Centroid position — placed at the center of the deletable blocks (the
+    // ones being replaced). If the only thing in scope is a drawing, fall back
+    // to the full-scope centroid so the new block lands near the drawing.
+    const centroidNotes = deletableNotes.length > 0 ? deletableNotes : scopeNotes
+    const cx = centroidNotes.reduce((a, n) => a + n.x, 0) / centroidNotes.length
+    const cy = centroidNotes.reduce((a, n) => a + n.y, 0) / centroidNotes.length
 
     const newId = genId()
     const newNote = createNote({
@@ -566,11 +586,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       is_ai_generated: true,
     })
 
-    // Rewire external connections (one endpoint in scope, other outside) to newId
-    // Drop internal connections (both endpoints in scope)
+    // Rewire external connections (one endpoint deletable, other surviving) to newId.
+    // Drop internal connections (both endpoints deletable). Connections to/from
+    // surviving drawings are left untouched.
     // Snapshot all state first for undo
     const snapshot = {
-      deleted_notes: scopeNotes,
+      deleted_notes: deletableNotes,
       deleted_connections: allConns, // we'll recompute below into internal+external
       new_note_id: newId,
     }
@@ -578,8 +599,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const rewiredConns: { id: string; from: string; to: string }[] = []
 
     for (const c of allConns) {
-      const fromIn = scopeSet.has(c.from_block_id)
-      const toIn = scopeSet.has(c.to_block_id)
+      const fromIn = deletableSet.has(c.from_block_id)
+      const toIn = deletableSet.has(c.to_block_id)
       if (fromIn && toIn) {
         // internal — delete, no replacement
         deleteConnection(c.id)
@@ -600,8 +621,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       }
     }
 
-    // Delete the scope notes (cascades any remaining conns, should be none)
-    for (const n of scopeNotes) deleteNote(n.id)
+    // Delete the deletable scope notes (cascades any remaining conns, should be none).
+    // Drawings stay.
+    for (const n of deletableNotes) deleteNote(n.id)
 
     return NextResponse.json({
       new_note: newNote,
