@@ -135,6 +135,39 @@ async function snapshotCanvas(
 }
 
 /**
+ * Snapshot the whole canvas content extent (bbox of all blocks + margin).
+ * Used by the "Report to engineer" flow — wants the full picture, not a frame.
+ * Returns "" if no blocks (caller should handle).
+ */
+async function snapshotCanvasFull(
+  wrapper: HTMLElement,
+  blocks: { x: number; y: number; width?: number; height?: number }[],
+  maxBytes = 900_000
+): Promise<string> {
+  if (blocks.length === 0) return ""
+  const margin = 80
+  let min_x = Infinity, min_y = Infinity, max_x = -Infinity, max_y = -Infinity
+  for (const b of blocks) {
+    const w = b.width ?? 180
+    const h = b.height && b.height > 0 ? b.height : 60
+    if (b.x < min_x) min_x = b.x
+    if (b.y < min_y) min_y = b.y
+    if (b.x + w > max_x) max_x = b.x + w
+    if (b.y + h > max_y) max_y = b.y + h
+  }
+  return snapshotCanvas(
+    wrapper,
+    {
+      min_x: min_x - margin,
+      min_y: min_y - margin,
+      max_x: max_x + margin,
+      max_y: max_y + margin,
+    },
+    maxBytes
+  )
+}
+
+/**
  * Push-apart any overlapping rects in O(n²) per iteration. Pure function:
  * returns a new map of rect.id -> { x, y }. Mutates `out` internally for speed.
  */
@@ -453,6 +486,24 @@ export default function Page() {
   const [toast, setToast] = useState<string | null>(null)
   const canvasInputRef = useRef<HTMLInputElement>(null)
   const augmentInputRef = useRef<HTMLInputElement>(null)
+
+  // ── Report to engineer ──────────────────────────────────────────────────
+  // Tracks before/after state of the most recent augment so the user can
+  // one-click "Report issue to engineer" without re-snapshotting.
+  type ReportContext = {
+    before_png: string
+    before_state: { blocks: Block[]; connections: Connection[] }
+    after_png?: string
+    after_state?: { blocks: Block[]; connections: Connection[] }
+    prompt?: string
+    mode?: string
+    ts: number
+  }
+  const lastAugmentContextRef = useRef<ReportContext | null>(null)
+  const [hasReportContext, setHasReportContext] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportNote, setReportNote] = useState("")
+  const [reportBusy, setReportBusy] = useState(false)
 
   const undoStackRef = useRef<UndoEntry[]>([])
 
@@ -1079,6 +1130,28 @@ export default function Page() {
     if (!activeSessionId || !augmentPrompt.trim()) return
     setAugmentBusy(true)
     setAugmentError(null)
+
+    // Try to capture a "before" snapshot for the Report-to-engineer flow.
+    // Best-effort — if html-to-image fails or we're not in canvas view, skip.
+    let beforeReport: ReportContext | null = null
+    try {
+      const wrapperEl = canvasRef.current?.querySelector(":scope > div") as HTMLElement | null
+      if (wrapperEl && blocks.length > 0) {
+        const before_png = await snapshotCanvasFull(wrapperEl, blocks)
+        if (before_png) {
+          beforeReport = {
+            before_png,
+            before_state: { blocks: [...blocks], connections: [...connections] },
+            prompt: augmentPrompt,
+            mode: augmentRearrange ? "rearrange" : augmentStructured ? "structured" : "default",
+            ts: Date.now(),
+          }
+        }
+      }
+    } catch {
+      // Best-effort; silently skip
+    }
+
     try {
       const scopeIds = selectedIds.size > 0 ? Array.from(selectedIds) : blocks.map(b => b.id)
 
@@ -1204,6 +1277,27 @@ export default function Page() {
         setAugmentOpen(false)
         setAugmentPrompt("")
         setAugmentRearrange(false)
+
+        // After-snapshot for Report-to-engineer (rearrange branch)
+        if (beforeReport) {
+          try {
+            await new Promise(r => setTimeout(r, 80))
+            const afterBlocks: Block[] = data.notes || []
+            const afterConns: Connection[] = data.connections || []
+            const after_png = wrapperEl && afterBlocks.length > 0
+              ? await snapshotCanvasFull(wrapperEl, afterBlocks)
+              : ""
+            lastAugmentContextRef.current = {
+              ...beforeReport,
+              after_png: after_png || undefined,
+              after_state: { blocks: afterBlocks, connections: afterConns },
+            }
+            setHasReportContext(true)
+          } catch {
+            lastAugmentContextRef.current = beforeReport
+            setHasReportContext(true)
+          }
+        }
         return
       }
 
@@ -1250,6 +1344,30 @@ export default function Page() {
       }
       setAugmentOpen(false)
       setAugmentPrompt("")
+
+      // Capture "after" snapshot for the Report-to-engineer flow.
+      if (beforeReport) {
+        try {
+          const wrapperEl = canvasRef.current?.querySelector(":scope > div") as HTMLElement | null
+          const afterBlocks: Block[] = data.notes || []
+          const afterConns: Connection[] = data.connections || []
+          // Tiny delay so React commits the new layout before we snapshot.
+          await new Promise(r => setTimeout(r, 80))
+          const after_png = wrapperEl && afterBlocks.length > 0
+            ? await snapshotCanvasFull(wrapperEl, afterBlocks)
+            : ""
+          lastAugmentContextRef.current = {
+            ...beforeReport,
+            after_png: after_png || undefined,
+            after_state: { blocks: afterBlocks, connections: afterConns },
+          }
+          setHasReportContext(true)
+        } catch {
+          // Best-effort; still set the before-only context so Report still works
+          lastAugmentContextRef.current = beforeReport
+          setHasReportContext(true)
+        }
+      }
     } catch (e: any) {
       setAugmentError(e.message)
     } finally {
@@ -1274,6 +1392,66 @@ export default function Page() {
       setWikiBusy(false)
     }
   }, [activeSessionId, wikiBusy, showToast])
+
+  // ── Report to engineer ─────────────────────────────────────────────────
+  const submitReport = useCallback(async () => {
+    if (!activeSessionId || reportBusy) return
+    setReportBusy(true)
+    try {
+      const ctx = lastAugmentContextRef.current
+      const wrapperEl = canvasRef.current?.querySelector(":scope > div") as HTMLElement | null
+
+      // If we have augment context, send before+after. Otherwise send just current.
+      let before_png: string | undefined
+      let before_state: any
+      let after_png: string | undefined
+      let after_state: any
+      let prompt: string | undefined
+      let mode: string | undefined
+
+      if (ctx) {
+        before_png = ctx.before_png
+        before_state = ctx.before_state
+        after_png = ctx.after_png
+        after_state = ctx.after_state
+        prompt = ctx.prompt
+        mode = ctx.mode
+      } else if (wrapperEl && blocks.length > 0) {
+        // Manual share: snapshot current state as "after" only
+        const png = await snapshotCanvasFull(wrapperEl, blocks).catch(() => "")
+        if (png) after_png = png
+        after_state = { blocks: [...blocks], connections: [...connections] }
+        mode = "manual"
+      } else {
+        after_state = { blocks: [...blocks], connections: [...connections] }
+        mode = "manual"
+      }
+
+      const res = await api(`/api/report-issue`, {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: activeSessionId,
+          note: reportNote,
+          prompt,
+          mode,
+          before_png,
+          after_png,
+          before_state,
+          after_state,
+        }),
+      })
+      showToast(`Reported: ${res.relative}`)
+      setReportOpen(false)
+      setReportNote("")
+      // Clear the augment context after report — one report per augment
+      lastAugmentContextRef.current = null
+      setHasReportContext(false)
+    } catch (e: any) {
+      showToast(`Report failed: ${e.message}`)
+    } finally {
+      setReportBusy(false)
+    }
+  }, [activeSessionId, reportBusy, reportNote, blocks, connections, showToast])
 
   // ── Export to markdown ───────────────────────────────────────────────────
   const doExport = useCallback(() => {
@@ -1419,6 +1597,16 @@ export default function Page() {
             >
               <span>Export MD</span>
               <span className="text-[10px]">↓</span>
+            </button>
+            <button
+              data-testid="report-sidebar"
+              disabled={!activeSessionId || reportBusy}
+              onClick={() => setReportOpen(true)}
+              title="Send canvas snapshot + note to engineer"
+              className="flex items-center justify-between w-full h-8 px-2.5 rounded-sm bg-amber-500/10 hover:bg-amber-500/20 text-amber-200 font-mono text-[9px] font-bold uppercase tracking-[0.1em] disabled:opacity-30 transition-all active:scale-[0.98] border border-amber-500/30"
+            >
+              <span>{hasReportContext ? "Report augment" : "Share to engineer"}</span>
+              <span className="text-[10px]">→</span>
             </button>
             <div className="flex items-center gap-1 pt-1">
               <span className="font-mono text-[8px] text-muted-foreground/40 uppercase tracking-wider">wiki:</span>
@@ -1741,6 +1929,72 @@ export default function Page() {
             </button>
           </div>
         </div>}
+
+        {/* Report-to-engineer floating button (after augment) */}
+        {hasReportContext && !reportOpen && !augmentOpen && (
+          <button
+            data-testid="report-button"
+            onClick={() => setReportOpen(true)}
+            title="Report this augment to engineer"
+            className="absolute bottom-4 left-4 z-40 rounded-sm border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 backdrop-blur-md px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-200 transition-all active:scale-[0.98]"
+          >
+            Report to engineer
+          </button>
+        )}
+
+        {/* Report-to-engineer dialog */}
+        {reportOpen && (
+          <div className="absolute inset-x-0 bottom-4 z-50 flex justify-center">
+            <div className="flex w-[600px] max-w-[90%] flex-col gap-3 rounded-sm border border-amber-500/30 bg-black/90 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
+              <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-amber-300/70">
+                {hasReportContext
+                  ? "Report this augment to engineer"
+                  : "Share canvas with engineer"}
+              </div>
+              <textarea
+                data-testid="report-note"
+                value={reportNote}
+                onChange={e => setReportNote(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault()
+                    submitReport()
+                  }
+                }}
+                disabled={reportBusy}
+                placeholder={hasReportContext
+                  ? "What's wrong with this result? (e.g. hierarchy went flat, labels lost meaning)"
+                  : "What should engineer look at? (optional)"}
+                rows={3}
+                className="rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-amber-500/50 transition-colors resize-none"
+              />
+              <div className="flex items-center justify-between">
+                <div className="font-mono text-[10px] text-white/40">
+                  {hasReportContext ? "Sends before/after PNG + state + your note" : "Sends current canvas PNG + state"}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setReportOpen(false)
+                      setReportNote("")
+                    }}
+                    className="rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    data-testid="report-submit"
+                    disabled={reportBusy}
+                    onClick={submitReport}
+                    className="rounded-sm bg-amber-500/80 hover:bg-amber-500 px-4 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-black disabled:opacity-30 transition-all active:scale-[0.98]"
+                  >
+                    {reportBusy ? "Sending..." : "Send"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Augment prompt */}
         {augmentOpen && (
