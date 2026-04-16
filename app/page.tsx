@@ -761,7 +761,13 @@ export default function Page() {
   const startRecording = useCallback(async () => {
     if (recording || transcribing) return
     if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      showToast("Voice input not supported in this browser")
+      // The single most common cause is "not a secure context" — browsers
+      // gate getUserMedia to https:// or localhost. Tell the user that
+      // explicitly so they don't think the feature is broken.
+      const insecure = typeof window !== "undefined" && !window.isSecureContext
+      showToast(insecure
+        ? "Voice needs HTTPS — open the https:// URL"
+        : "Voice input not supported in this browser")
       return
     }
     try {
