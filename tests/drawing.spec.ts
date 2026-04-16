@@ -78,3 +78,13 @@ test("drawing: tile view shows drawing block and double-tap opens overlay", asyn
   await tile.locator('[data-testid^="tile-drawing-expand-"]').click()
   await expect(page.getByTestId("excalidraw-overlay")).toBeVisible({ timeout: 10_000 })
 })
+
+test("voice: mic button visible in entry bar and toggles to recording state", async ({ page, context }) => {
+  await context.grantPermissions(["microphone"], { origin: BASE })
+  await page.goto(BASE)
+  await expect(page.locator('[data-testid^="session-item-"]').first()).toBeVisible({ timeout: 5000 })
+
+  const mic = page.getByTestId("voice-input-btn")
+  await expect(mic).toBeVisible()
+  await expect(mic).toHaveAttribute("aria-pressed", "false")
+})

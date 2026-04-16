@@ -739,6 +739,111 @@ export default function Page() {
     }
   }, [showToast])
 
+  // ── Voice input (mic in Entry bar → Whisper transcription) ───────────────
+  // Tap mic to start recording, tap again to stop. On stop, the audio is
+  // POSTed to /api/transcribe (which forwards to the same Whisper endpoint
+  // the Matrix transcription Hand uses). The transcript is appended to the
+  // input field — user reviews + hits Enter / Submit to actually create the
+  // block, so we never auto-submit unverified speech.
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recorderChunksRef = useRef<Blob[]>([])
+  const recorderStreamRef = useRef<MediaStream | null>(null)
+
+  const stopRecording = useCallback(() => {
+    const r = recorderRef.current
+    if (r && r.state !== "inactive") {
+      r.stop()
+    }
+  }, [])
+
+  const startRecording = useCallback(async () => {
+    if (recording || transcribing) return
+    if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      showToast("Voice input not supported in this browser")
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      recorderStreamRef.current = stream
+      // Pick the best mime type the browser actually supports. Chrome/Firefox
+      // → audio/webm;opus, Safari → audio/mp4. Both are accepted by
+      // faster-whisper-server (ffmpeg under the hood).
+      const candidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+        "audio/ogg;codecs=opus",
+      ]
+      let mime = ""
+      for (const c of candidates) {
+        if ((window as any).MediaRecorder?.isTypeSupported?.(c)) { mime = c; break }
+      }
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
+      recorderChunksRef.current = []
+      rec.ondataavailable = e => {
+        if (e.data && e.data.size > 0) recorderChunksRef.current.push(e.data)
+      }
+      rec.onstop = async () => {
+        // Always release the mic immediately after stop — otherwise the
+        // browser keeps the red "in use" indicator on for the rest of the
+        // session, which is creepy.
+        const s = recorderStreamRef.current
+        if (s) { for (const t of s.getTracks()) t.stop(); recorderStreamRef.current = null }
+        recorderRef.current = null
+        setRecording(false)
+
+        const chunks = recorderChunksRef.current
+        recorderChunksRef.current = []
+        if (chunks.length === 0) return
+        const blob = new Blob(chunks, { type: chunks[0].type || mime || "audio/webm" })
+        if (blob.size < 800) {
+          showToast("Recording too short")
+          return
+        }
+        setTranscribing(true)
+        try {
+          const fd = new FormData()
+          fd.append("audio", blob, `voice.${(blob.type.split("/")[1] || "webm").split(";")[0]}`)
+          const res = await fetch("/api/transcribe", { method: "POST", body: fd })
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(data?.error || `transcribe ${res.status}`)
+          const text = String(data?.text || "").trim()
+          if (!text) {
+            showToast("Nothing transcribed")
+            return
+          }
+          // Append rather than replace, so the user can dictate additions to
+          // text they've already typed.
+          setInputText(prev => {
+            const sep = prev && !prev.endsWith(" ") ? " " : ""
+            return prev + sep + text
+          })
+          // Refocus the input so they can immediately Enter/edit.
+          canvasInputRef.current?.focus()
+        } catch (e: any) {
+          showToast(`Transcribe error: ${e.message}`)
+        } finally {
+          setTranscribing(false)
+        }
+      }
+      recorderRef.current = rec
+      rec.start()
+      setRecording(true)
+    } catch (e: any) {
+      showToast(`Mic error: ${e.message}`)
+      setRecording(false)
+      const s = recorderStreamRef.current
+      if (s) { for (const t of s.getTracks()) t.stop(); recorderStreamRef.current = null }
+    }
+  }, [recording, transcribing, showToast])
+
+  const toggleRecording = useCallback(() => {
+    if (recording) stopRecording()
+    else startRecording()
+  }, [recording, startRecording, stopRecording])
+
   // ── Delete selected blocks (with in-app confirm) ─────────────────────────
   const performDeleteSelected = useCallback(async () => {
     if (selectedIds.size === 0) return
@@ -2298,16 +2403,56 @@ export default function Page() {
             />
           </div>
           <div className="flex items-center gap-3">
-            <button
-              data-testid="new-drawing-btn"
-              onClick={createDrawingBlock}
-              className="flex h-7 items-center gap-1.5 rounded-sm border border-white/10 bg-white/5 px-2 font-mono text-[10px] font-bold uppercase tracking-wider text-white/65 hover:border-primary/40 hover:text-primary transition-all"
-              title="New drawing block"
-              disabled={!activeSessionId}
-            >
-              <span className="text-base leading-none">✎</span>
-              <span>Sketch</span>
-            </button>
+            {/* Icon cluster — same h-7 minimal-pill treatment as the zoom toolbar.
+                Mic toggles voice input → /api/transcribe (Whisper). Sketch creates
+                a new drawing block + opens the editor. Both are intentionally
+                icon-only so they read as utilities, not actions. */}
+            <div className="flex items-center rounded-sm border border-white/10 bg-white/[0.03]">
+              <button
+                data-testid="voice-input-btn"
+                onClick={toggleRecording}
+                disabled={transcribing || !activeSessionId}
+                title={recording ? "Stop & transcribe" : (transcribing ? "Transcribing…" : "Voice input")}
+                aria-pressed={recording}
+                aria-label="Voice input"
+                className={`flex h-7 w-8 items-center justify-center transition-colors ${
+                  recording
+                    ? "text-red-400 hover:text-red-300"
+                    : transcribing
+                      ? "text-primary animate-pulse"
+                      : "text-white/55 hover:text-white/85 hover:bg-white/[0.06]"
+                } disabled:opacity-30 disabled:hover:bg-transparent`}
+              >
+                {recording ? (
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-400" />
+                  </span>
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="3" width="6" height="12" rx="3" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <line x1="12" y1="18" x2="12" y2="22" />
+                  </svg>
+                )}
+              </button>
+              <div className="h-4 w-px bg-white/10" />
+              <button
+                data-testid="new-drawing-btn"
+                onClick={createDrawingBlock}
+                disabled={!activeSessionId}
+                title="New drawing block"
+                aria-label="New drawing block"
+                className="flex h-7 w-8 items-center justify-center text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                  <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+                  <path d="M2 2l7.586 7.586" />
+                  <circle cx="11" cy="11" r="2" />
+                </svg>
+              </button>
+            </div>
             <div className="h-4 w-px bg-white/10" />
             <div className="flex items-center gap-2">
               <kbd className="flex h-5 items-center rounded border border-white/10 bg-white/5 px-1.5 font-mono text-[9px] text-white/60">
