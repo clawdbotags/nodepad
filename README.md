@@ -24,6 +24,20 @@ Three views: **tiling** (spatial BSP grid), **kanban** (grouped by type), **grap
 
 ---
 
+## Live instance (Albert)
+
+Running on the Hetzner server, exposed via Tailscale:
+
+| URL | Use |
+|---|---|
+| `http://localhost:3034/` | Same machine (port differs from upstream — multiple nodepad versions co-exist). |
+| `http://ubuntu-4gb-hel1-1.tail6fe47c.ts.net:3034/` | Plain HTTP over Tailscale — desktop only. |
+| `https://ubuntu-4gb-hel1-1.tail6fe47c.ts.net:8444/` | **HTTPS** — required for voice input on iPad / phone (browsers gate `getUserMedia` to secure contexts). Served via `tailscale serve --bg --https=8444 http://127.0.0.1:3034`. |
+
+Managed by the `nodepad-v2` service in the engineer workspace's service-supervisor — auto-respawns on crash, picks up new builds within ~10s.
+
+---
+
 ## Setup
 
 **Requirements**: a desktop browser and an API key from one of the supported providers.
