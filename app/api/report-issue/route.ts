@@ -4,6 +4,56 @@ import path from "path"
 import os from "os"
 import { getSession } from "@/lib/server/db"
 
+// Matrix push: read token from ~/.openfang/.env (no extra deps), POST to engineer room.
+const MATRIX_HOMESERVER = "http://ubuntu-4gb-hel1-1:30008"
+const ENGINEER_ROOM = "!NRvAkEEJgtwGvPvWBP:ubuntu-4gb-hel1-1"
+const ENV_FILE = path.join(os.homedir(), ".openfang", ".env")
+
+let _matrixTokenCache: string | null = null
+async function getMatrixToken(): Promise<string | null> {
+  if (_matrixTokenCache) return _matrixTokenCache
+  // Try env first (free if it's there), then fall back to .env file.
+  if (process.env.MATRIX_ACCESS_TOKEN) {
+    _matrixTokenCache = process.env.MATRIX_ACCESS_TOKEN
+    return _matrixTokenCache
+  }
+  try {
+    const text = await fs.readFile(ENV_FILE, "utf8")
+    for (const line of text.split("\n")) {
+      const m = /^\s*MATRIX_ACCESS_TOKEN\s*=\s*(.+?)\s*$/.exec(line)
+      if (m) {
+        _matrixTokenCache = m[1].replace(/^['"]|['"]$/g, "")
+        return _matrixTokenCache
+      }
+    }
+  } catch {
+    // .env not readable
+  }
+  return null
+}
+
+async function notifyEngineerMatrix(message: string): Promise<boolean> {
+  const token = await getMatrixToken()
+  if (!token) return false
+  const txn = Date.now()
+  const url = `${MATRIX_HOMESERVER}/_matrix/client/r0/rooms/${encodeURIComponent(
+    ENGINEER_ROOM
+  )}/send/m.room.message/${txn}`
+  try {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ msgtype: "m.text", body: message }),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 // POST /api/report-issue
 // Body:
 // {
@@ -124,10 +174,21 @@ export async function POST(req: Request) {
       .join("\n")
     await fs.writeFile(path.join(dirPath, "README.md"), summary)
 
+    // Fire-and-(mostly)-forget Matrix push to engineer's room.
+    const matrixLines = [
+      `📩 Albert reported a nodepad ${meta.mode || "share"}.`,
+      meta.note ? `Note: ${meta.note}` : null,
+      meta.prompt ? `Prompt: ${meta.prompt}` : null,
+      `Path: ~/.openfang/workspaces/engineer/incoming/${dirName}`,
+      `Read README.md and the before/after PNGs to investigate.`,
+    ].filter(Boolean) as string[]
+    const notified = await notifyEngineerMatrix(matrixLines.join("\n"))
+
     return NextResponse.json({
       ok: true,
       path: dirPath,
       relative: `incoming/${dirName}`,
+      notified,
     })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 })
