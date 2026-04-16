@@ -15,6 +15,7 @@ async function main() {
   const context = await browser.newContext({
     ...phone,
     permissions: ['microphone'],
+    ignoreHTTPSErrors: true,
   })
   const page = await context.newPage()
 
@@ -23,7 +24,10 @@ async function main() {
   })
 
   // Deep-link to the session that has actual content so we can see Tiled view.
-  await page.goto('http://127.0.0.1:3034/?session=s4rexszo', { waitUntil: 'networkidle' })
+  // Hit the live HTTPS URL (what Albert sees) — not localhost — to catch
+  // any proxy/cache surprises.
+  const baseUrl = process.env.NODEPAD_URL || 'https://ubuntu-4gb-hel1-1.tail6fe47c.ts.net:8444'
+  await page.goto(`${baseUrl}/?session=s4rexszo`, { waitUntil: 'networkidle' })
   await page.waitForTimeout(1500)
 
   const shots: string[] = []

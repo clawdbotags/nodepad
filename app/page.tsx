@@ -12,6 +12,7 @@ import {
 } from "@/components/excalidraw-overlay"
 import { AILogPanel } from "@/components/ai-log-panel"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
+import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -903,6 +904,194 @@ export default function Page() {
     },
     onError: showToast,
   })
+
+  // ── Drive Mode (turn-based voice ↔ canvas, no LLM rundown) ───────────────
+  // Designed for hands-on-the-wheel use: tap once to enter, then it's a loop:
+  //   listening → (you stop talking + tap, or auto via VAD) → thinking →
+  //   speaking → listening (auto-armed)
+  // The "speaking" voice is Kokoro (self-hosted), the words are templated
+  // from the actual augment diff — no LLM in the response loop.
+  const [driveOpen, setDriveOpen] = useState(false)
+  type DriveStatus = "idle" | "listening" | "thinking" | "speaking" | "error"
+  const [driveStatus, setDriveStatus] = useState<DriveStatus>("idle")
+  const [driveLastRundown, setDriveLastRundown] = useState<string>("")
+  const [driveTurnCount, setDriveTurnCount] = useState(0)
+  const driveAudioRef = useRef<HTMLAudioElement | null>(null)
+  const driveAutoArmRef = useRef<boolean>(false)
+  // Refs to break the circular dep between runDriveTurn and driveVoice.
+  // Both are defined below; the recorder's callbacks read these refs at
+  // call-time so they always see the latest function reference.
+  const runDriveTurnRef = useRef<((text: string) => void) | null>(null)
+  const driveVoiceRef = useRef<{
+    start: () => Promise<void> | void
+    stop: () => void
+    recording: boolean
+  } | null>(null)
+  const safeRearm = useCallback(() => {
+    if (!driveAutoArmRef.current) {
+      setDriveStatus("idle")
+      return
+    }
+    setDriveStatus("listening")
+    setTimeout(() => { driveVoiceRef.current?.start() }, 80)
+  }, [])
+
+  // Drive Mode voice recorder — on transcript, calls the latest runDriveTurn.
+  const driveVoice = useVoiceRecorder({
+    onTranscript: text => {
+      // If we're not in drive mode anymore (user closed it mid-recording), ignore.
+      if (!driveAutoArmRef.current) return
+      runDriveTurnRef.current?.(text)
+    },
+    onError: msg => {
+      console.warn("drive voice error:", msg)
+      setDriveLastRundown(msg)
+      safeRearm()
+    },
+  })
+  // Keep the ref pointing at the latest recorder API.
+  useEffect(() => {
+    driveVoiceRef.current = {
+      start: driveVoice.start,
+      stop: driveVoice.stop,
+      recording: driveVoice.recording,
+    }
+  }, [driveVoice.start, driveVoice.stop, driveVoice.recording])
+
+  // Run one Drive Mode turn: transcript → structured augment → rundown → TTS.
+  const runDriveTurn = useCallback(async (transcript: string) => {
+    if (!activeSessionId) return
+    setDriveStatus("thinking")
+    try {
+      // Always use structured mode in Drive Mode — it adds new blocks +
+      // connections rather than replacing existing content. This matches
+      // "creates and links the thoughts I have" from the user spec.
+      const res = await api(`/api/sessions/${activeSessionId}/augment`, {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: transcript,
+          block_ids: [], // Empty scope — let the LLM operate on whole session
+          mode: "structured",
+        }),
+      })
+      // Refresh canvas state so the user sees the new blocks/connections
+      // when they look at the screen later.
+      const data = await api(`/api/sessions/${activeSessionId}`)
+      setBlocks(data.notes || [])
+      setConnections(data.connections || [])
+
+      // Push undo entry so user can undo Drive Mode turns from the canvas.
+      if (res.mode === "structured") {
+        const newBlockIds: string[] = (res.new_blocks || []).map((b: any) => b.id)
+        const newConnIds: string[] = (res.new_connections || []).map((c: any) => c.id)
+        const snap = res.snapshot || {}
+        undoStackRef.current.push({
+          kind: "augment-structured",
+          deleted_notes: snap.deleted_notes || [],
+          deleted_connections: snap.deleted_connections || [],
+          new_block_ids: newBlockIds,
+          new_connection_ids: newConnIds,
+        })
+      }
+
+      // Build the rundown text from whatever the server actually did.
+      const diff: AugmentDiff = {
+        new_blocks: (res.new_blocks || []).map((b: any) => ({ id: b.id, text: b.text })),
+        new_connections: (res.new_connections || []).map((c: any) => ({
+          id: c.id, from: c.from_block_id, to: c.to_block_id,
+        })),
+        new_note_id: res.new_note?.id,
+        new_note_text: res.new_note?.text,
+      }
+      const rundown = formatRundown(diff)
+      setDriveLastRundown(rundown)
+      setDriveTurnCount(c => c + 1)
+
+      // TTS — Kokoro via /api/speak. If TTS fails, just go back to listening.
+      setDriveStatus("speaking")
+      try {
+        const speakRes = await fetch("/api/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: rundown, format: "mp3" }),
+        })
+        if (!speakRes.ok) throw new Error(`speak ${speakRes.status}`)
+        const audioBuf = await speakRes.arrayBuffer()
+        const blob = new Blob([audioBuf], { type: "audio/mpeg" })
+        const url = URL.createObjectURL(blob)
+        // Reuse the same Audio element so iOS keeps the play permission.
+        let audio = driveAudioRef.current
+        if (!audio) {
+          audio = new Audio()
+          driveAudioRef.current = audio
+        }
+        audio.src = url
+        audio.onended = () => { URL.revokeObjectURL(url); safeRearm() }
+        audio.onerror = () => { URL.revokeObjectURL(url); safeRearm() }
+        await audio.play().catch(err => {
+          console.warn("audio play failed:", err)
+          safeRearm()
+        })
+      } catch (e: any) {
+        console.warn("TTS failed:", e?.message || e)
+        safeRearm()
+      }
+    } catch (e: any) {
+      console.error("drive augment failed:", e)
+      setDriveLastRundown(`Error: ${e?.message || "augment failed"}`)
+      setDriveStatus("error")
+      // Recover: re-arm after a moment so a single bad turn doesn't kill the session.
+      if (driveAutoArmRef.current) {
+        setTimeout(safeRearm, 1200)
+      }
+    }
+  }, [activeSessionId, safeRearm])
+  useEffect(() => { runDriveTurnRef.current = runDriveTurn }, [runDriveTurn])
+
+  // Open Drive Mode — flip auto-arm flag and start the first listen.
+  const openDriveMode = useCallback(() => {
+    if (!activeSessionId) {
+      showToast("Pick a canvas first")
+      return
+    }
+    driveAutoArmRef.current = true
+    setDriveOpen(true)
+    setDriveLastRundown("")
+    setDriveTurnCount(0)
+    setDriveStatus("listening")
+    setTimeout(() => { driveVoiceRef.current?.start() }, 120)
+  }, [activeSessionId, showToast])
+
+  // Close Drive Mode — stop everything cleanly.
+  const closeDriveMode = useCallback(() => {
+    driveAutoArmRef.current = false
+    if (driveVoiceRef.current?.recording) driveVoiceRef.current.stop()
+    const a = driveAudioRef.current
+    if (a) {
+      try { a.pause(); a.src = "" } catch {}
+    }
+    setDriveOpen(false)
+    setDriveStatus("idle")
+  }, [])
+
+  // Big-button handler in the overlay — meaning depends on current state.
+  const handleDriveTap = useCallback(() => {
+    if (driveStatus === "listening") {
+      // Stop & process this turn
+      driveVoiceRef.current?.stop()
+      // useVoiceRecorder will fire onTranscript → runDriveTurnRef.current(...)
+    } else if (driveStatus === "speaking") {
+      // Skip the rundown — go straight back to listening.
+      const a = driveAudioRef.current
+      if (a) { try { a.pause() } catch {} }
+      safeRearm()
+    } else if (driveStatus === "idle" || driveStatus === "error") {
+      // Re-arm
+      driveAutoArmRef.current = true
+      safeRearm()
+    }
+    // thinking → tap is no-op (waiting on server)
+  }, [driveStatus, safeRearm])
 
   // ── Delete selected blocks (with in-app confirm) ─────────────────────────
   const performDeleteSelected = useCallback(async () => {
@@ -2457,6 +2646,116 @@ export default function Page() {
           </div>
         )}
 
+        {/* Drive Mode overlay — hands-off voice loop. Big tap-targets,
+            high-contrast colors so it's readable from a phone mounted on a
+            dashboard at arm's length. Backdrop covers EVERYTHING (z-[80]) so
+            no canvas tap-throughs while driving. */}
+        {driveOpen && (
+          <div
+            data-testid="drive-mode-overlay"
+            className="fixed inset-0 z-[80] flex flex-col items-center justify-between bg-black/95 backdrop-blur-2xl px-4 py-8 select-none"
+          >
+            {/* Top bar — title + close */}
+            <div className="w-full flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/85">
+                  <circle cx="12" cy="12" r="9" />
+                  <circle cx="12" cy="12" r="2.5" />
+                  <line x1="12" y1="2.5" x2="12" y2="9.5" />
+                  <line x1="3" y1="12" x2="9.5" y2="12" />
+                  <line x1="14.5" y1="12" x2="21" y2="12" />
+                </svg>
+                <span className="font-mono text-xs font-bold uppercase tracking-[0.25em] text-white/85">Drive Mode</span>
+              </div>
+              <button
+                data-testid="drive-mode-close"
+                onClick={closeDriveMode}
+                className="flex items-center justify-center h-11 w-11 rounded-sm border border-white/15 bg-white/[0.05] hover:bg-white/[0.1] text-white/85 transition-colors"
+                aria-label="Exit Drive Mode"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Center — status text + giant button */}
+            <div className="flex flex-1 flex-col items-center justify-center gap-8 w-full">
+              <div className="font-mono text-[11px] font-bold uppercase tracking-[0.4em] text-white/55">
+                {driveStatus === "listening" && "Listening"}
+                {driveStatus === "thinking" && "Processing"}
+                {driveStatus === "speaking" && "Speaking"}
+                {driveStatus === "idle" && "Tap to talk"}
+                {driveStatus === "error" && "Error · tap to retry"}
+              </div>
+              <button
+                data-testid="drive-mode-button"
+                onClick={handleDriveTap}
+                disabled={driveStatus === "thinking"}
+                className={`relative flex items-center justify-center rounded-full transition-all active:scale-[0.96] ${
+                  driveStatus === "listening"
+                    ? "bg-red-500/90 hover:bg-red-500 shadow-[0_0_60px_-10px_rgba(239,68,68,0.85)]"
+                    : driveStatus === "thinking"
+                      ? "bg-amber-500/80 cursor-wait"
+                      : driveStatus === "speaking"
+                        ? "bg-emerald-500/90 hover:bg-emerald-500 shadow-[0_0_60px_-10px_rgba(16,185,129,0.85)]"
+                        : driveStatus === "error"
+                          ? "bg-orange-500/90 hover:bg-orange-500"
+                          : "bg-primary/80 hover:bg-primary shadow-[0_0_40px_-10px_rgba(255,255,255,0.4)]"
+                }`}
+                style={{ width: "min(72vw, 240px)", height: "min(72vw, 240px)" }}
+                aria-label="Drive Mode action button"
+              >
+                {/* Pulsing ring while listening */}
+                {driveStatus === "listening" && (
+                  <span className="absolute inset-0 rounded-full bg-red-400/40 animate-ping" />
+                )}
+                {driveStatus === "speaking" && (
+                  <span className="absolute inset-0 rounded-full bg-emerald-400/40 animate-ping" />
+                )}
+                {/* Icon — mic for listen/idle, hourglass for thinking, waveform for speaking */}
+                {driveStatus === "thinking" ? (
+                  <svg className="animate-spin" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 12a9 9 0 1 1-6.2-8.55" />
+                  </svg>
+                ) : driveStatus === "speaking" ? (
+                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  </svg>
+                ) : (
+                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="2" width="6" height="13" rx="3" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <line x1="12" y1="18" x2="12" y2="22" />
+                  </svg>
+                )}
+              </button>
+              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/40">
+                {driveStatus === "listening" && "Tap when done"}
+                {driveStatus === "speaking" && "Tap to skip"}
+                {driveStatus === "thinking" && "Hold on…"}
+                {(driveStatus === "idle" || driveStatus === "error") && "Tap the mic"}
+              </div>
+            </div>
+
+            {/* Bottom — last rundown text + turn count */}
+            <div className="w-full flex flex-col items-center gap-2">
+              <div
+                data-testid="drive-mode-rundown"
+                className="min-h-[64px] w-full max-w-[600px] rounded-sm border border-white/10 bg-white/[0.03] px-4 py-3 font-mono text-[14px] leading-snug text-white/85 text-center"
+              >
+                {driveLastRundown || (driveStatus === "listening" ? "Speak now…" : "")}
+              </div>
+              <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/35">
+                {driveTurnCount > 0 ? `${driveTurnCount} turn${driveTurnCount === 1 ? "" : "s"} this session` : "First turn"}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Augment prompt */}
         {augmentOpen && (
           <>
@@ -2683,6 +2982,26 @@ export default function Page() {
                   <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
                   <path d="M2 2l7.586 7.586" />
                   <circle cx="11" cy="11" r="2" />
+                </svg>
+              </button>
+              <div className={`w-px bg-white/10 ${isMobile ? "h-6" : "h-4"}`} />
+              <button
+                data-testid="drive-mode-btn"
+                onClick={openDriveMode}
+                disabled={!activeSessionId}
+                title="Drive Mode — hands-off voice loop"
+                aria-label="Open Drive Mode"
+                className={`flex items-center justify-center text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-30 disabled:hover:bg-transparent transition-colors ${
+                  isMobile ? "h-11 w-11" : "h-7 w-8"
+                }`}
+              >
+                <svg width={isMobile ? "20" : "14"} height={isMobile ? "20" : "14"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  {/* steering wheel icon — circle with cross-spokes */}
+                  <circle cx="12" cy="12" r="9" />
+                  <circle cx="12" cy="12" r="2.5" />
+                  <line x1="12" y1="2.5" x2="12" y2="9.5" />
+                  <line x1="3" y1="12" x2="9.5" y2="12" />
+                  <line x1="14.5" y1="12" x2="21" y2="12" />
                 </svg>
               </button>
             </div>
