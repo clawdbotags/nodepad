@@ -1192,10 +1192,14 @@ export default function Page() {
         </button>
       )}
 
-      {/* Main canvas area */}
-      <main className="relative flex-1 h-full overflow-hidden">
+      {/* Main canvas area — flex column so the bottom Entry input bar is a
+          real sibling (shrink-0) and not an absolute overlay. Otherwise it
+          crops the bottom of tiled/graph/canvas views behind it. */}
+      <main className="relative flex-1 h-full overflow-hidden flex flex-col min-h-0">
+        {/* Content area (views + their overlays) */}
+        <div className="relative flex-1 min-h-0 overflow-hidden">
         {/* View toggle */}
-        <div className="absolute left-12 bottom-20 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
+        <div className="absolute left-3 bottom-3 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
           {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
             <button
               key={m}
@@ -1478,7 +1482,7 @@ export default function Page() {
 
         {/* Augment prompt */}
         {augmentOpen && (
-          <div className="absolute inset-x-0 bottom-20 z-40 flex justify-center">
+          <div className="absolute inset-x-0 bottom-4 z-40 flex justify-center">
             <div className="flex w-[600px] max-w-[90%] flex-col gap-3 rounded-sm border border-white/10 bg-black/85 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
               <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-white/45">
                 {selectedIds.size > 0
@@ -1540,9 +1544,12 @@ export default function Page() {
             </div>
           </div>
         )}
+        </div>
+        {/* /Content area */}
 
-        {/* Bottom text input (v1 VimInput style) */}
-        <div className="absolute inset-x-0 bottom-0 z-30 w-full border-t border-white/20 bg-black/80 backdrop-blur-3xl px-6 py-5 flex items-center gap-4 transition-all duration-300 focus-within:border-primary/40 relative">
+        {/* Bottom text input (v1 VimInput style) — shrink-0 sibling of the
+            content wrapper so it never overlays the views. */}
+        <div className="relative shrink-0 z-30 w-full border-t border-white/20 bg-black/80 backdrop-blur-3xl px-6 py-5 flex items-center gap-4 transition-all duration-300 focus-within:border-primary/40">
           <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent" />
           <div className="flex items-center gap-3 flex-1">
             <div className="font-mono text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] select-none">
