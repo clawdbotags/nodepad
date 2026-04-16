@@ -49,6 +49,14 @@ type UndoEntry =
       new_block_ids: string[]
       new_connection_ids: string[]
     }
+  | {
+      kind: "rearrange"
+      // Undo: PATCH each block back to its prior x/y, DELETE each added connection,
+      // POST each removed connection back into existence.
+      prior_positions: { id: string; x: number; y: number }[]
+      added_connection_ids: string[]
+      removed_connections: { id: string; from_block_id: string; to_block_id: string; label?: string }[]
+    }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,6 +70,101 @@ async function api(path: string, opts: RequestInit = {}) {
     throw new Error(`${res.status}: ${text}`)
   }
   return res.json()
+}
+
+// ── Rearrange helpers (snapshot + collision resolver) ──────────────────────
+
+type RearrangeFrame = { min_x: number; min_y: number; max_x: number; max_y: number }
+
+interface BlockRect {
+  id: string
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/**
+ * Render the canvas wrapper to a PNG data URL for the LLM.
+ * Wrapper is the un-translated content layer (SVG + blocks). We temporarily
+ * neutralise its transform so the snapshot covers the full content extent.
+ */
+async function snapshotCanvas(
+  wrapper: HTMLElement,
+  frame: RearrangeFrame,
+  maxBytes = 700_000
+): Promise<string> {
+  const { toPng } = await import("html-to-image")
+  const w = frame.max_x - frame.min_x
+  const h = frame.max_y - frame.min_y
+  const longest = Math.max(w, h)
+  const targetEdge = 1024
+  const pixelRatio = Math.max(0.4, Math.min(2, targetEdge / longest))
+
+  // Save current transform; reset it so the snapshot uses content-space coords.
+  const prev = wrapper.style.transform
+  const prevOrigin = wrapper.style.transformOrigin
+  wrapper.style.transform = "none"
+  wrapper.style.transformOrigin = "0 0"
+  let url = ""
+  try {
+    url = await toPng(wrapper, {
+      cacheBust: true,
+      pixelRatio,
+      backgroundColor: "#020202",
+      width: w,
+      height: h,
+      style: {
+        transform: `translate(${-frame.min_x}px, ${-frame.min_y}px)`,
+        transformOrigin: "0 0",
+      },
+    })
+  } finally {
+    wrapper.style.transform = prev
+    wrapper.style.transformOrigin = prevOrigin
+  }
+  // Rough byte estimate from base64 length. data:image/png;base64,XXXX
+  const b64 = url.split(",")[1] || ""
+  const bytes = Math.floor((b64.length * 3) / 4)
+  if (bytes > maxBytes) {
+    throw new Error(
+      `Canvas snapshot too large (${Math.round(bytes / 1024)} KB > ${Math.round(maxBytes / 1024)} KB). Zoom in or select a subset.`
+    )
+  }
+  return url
+}
+
+/**
+ * Push-apart any overlapping rects in O(n²) per iteration. Pure function:
+ * returns a new map of rect.id -> { x, y }. Mutates `out` internally for speed.
+ */
+function resolveCollisions(rects: BlockRect[], maxIters = 8): Record<string, { x: number; y: number }> {
+  const out = rects.map(r => ({ ...r }))
+  for (let iter = 0; iter < maxIters; iter++) {
+    let any = false
+    for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        const a = out[i], b = out[j]
+        const overlapX = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+        const overlapY = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+        if (overlapX > 0 && overlapY > 0) {
+          any = true
+          // Push along shorter axis
+          if (overlapX < overlapY) {
+            const push = overlapX / 2 + 1
+            if (a.x < b.x) { a.x -= push; b.x += push } else { a.x += push; b.x -= push }
+          } else {
+            const push = overlapY / 2 + 1
+            if (a.y < b.y) { a.y -= push; b.y += push } else { a.y += push; b.y -= push }
+          }
+        }
+      }
+    }
+    if (!any) break
+  }
+  const result: Record<string, { x: number; y: number }> = {}
+  for (const r of out) result[r.id] = { x: Math.round(r.x), y: Math.round(r.y) }
+  return result
 }
 
 // ── BSP Tiling Layout ───────────────────────────────────────────────────────
@@ -346,6 +449,7 @@ export default function Page() {
   const [augmentBusy, setAugmentBusy] = useState(false)
   const [augmentError, setAugmentError] = useState<string | null>(null)
   const [augmentStructured, setAugmentStructured] = useState(false)
+  const [augmentRearrange, setAugmentRearrange] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const canvasInputRef = useRef<HTMLInputElement>(null)
   const augmentInputRef = useRef<HTMLInputElement>(null)
@@ -935,6 +1039,38 @@ export default function Page() {
       } catch (e: any) {
         showToast(`Undo failed: ${e.message}`)
       }
+    } else if (entry.kind === "rearrange" && activeSessionId) {
+      try {
+        // Restore prior positions
+        for (const p of entry.prior_positions) {
+          await api(`/api/notes/${p.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ x: p.x, y: p.y }),
+          }).catch(() => {})
+        }
+        // Delete connections the rearrange added
+        for (const cid of entry.added_connection_ids) {
+          await api(`/api/connections/${cid}`, { method: "DELETE" }).catch(() => {})
+        }
+        // Recreate connections the rearrange removed
+        for (const c of entry.removed_connections) {
+          await api(`/api/sessions/${activeSessionId}/connections`, {
+            method: "POST",
+            body: JSON.stringify({
+              id: c.id,
+              from_block_id: c.from_block_id,
+              to_block_id: c.to_block_id,
+              label: c.label,
+            }),
+          }).catch(() => {})
+        }
+        const data = await api(`/api/sessions/${activeSessionId}`)
+        setBlocks(data.notes || [])
+        setConnections(data.connections || [])
+        showToast(`Undone rearrange (${entry.prior_positions.length} positions restored)`)
+      } catch (e: any) {
+        showToast(`Undo failed: ${e.message}`)
+      }
     }
   }, [activeSessionId, showToast])
 
@@ -945,6 +1081,132 @@ export default function Page() {
     setAugmentError(null)
     try {
       const scopeIds = selectedIds.size > 0 ? Array.from(selectedIds) : blocks.map(b => b.id)
+
+      // ── Rearrange mode: vision-grounded, returns moves + connection diff ──
+      if (augmentRearrange) {
+        const inScope = blocks.filter(b => scopeIds.includes(b.id))
+        if (inScope.length < 2) {
+          throw new Error("Rearrange needs at least 2 blocks in scope.")
+        }
+        // Find the inner transformed wrapper (first child of canvasRef)
+        const wrapperEl = canvasRef.current?.querySelector(":scope > div") as HTMLElement | null
+        if (!wrapperEl) throw new Error("Canvas not visible — switch to Canvas view first.")
+
+        // Compute content-space frame: bbox of in-scope blocks + 80px margin
+        const margin = 80
+        let min_x = Infinity, min_y = Infinity, max_x = -Infinity, max_y = -Infinity
+        for (const b of inScope) {
+          const w = b.width ?? 180
+          const h = b.height && b.height > 0 ? b.height : 60
+          if (b.x < min_x) min_x = b.x
+          if (b.y < min_y) min_y = b.y
+          if (b.x + w > max_x) max_x = b.x + w
+          if (b.y + h > max_y) max_y = b.y + h
+        }
+        min_x -= margin; min_y -= margin; max_x += margin; max_y += margin
+        const fw = max_x - min_x, fh = max_y - min_y
+        if (fw <= 0 || fh <= 0) throw new Error("Invalid frame.")
+
+        // Snapshot the canvas (content-space, frame-cropped)
+        const image_data_url = await snapshotCanvas(wrapperEl, { min_x, min_y, max_x, max_y })
+
+        // Normalize blocks to 0–1000 frame
+        const SPAN = 1000
+        const sx = SPAN / fw, sy = SPAN / fh
+        const blocks_in_frame = inScope.map(b => {
+          const w = b.width ?? 180
+          const h = b.height && b.height > 0 ? b.height : 60
+          return {
+            id: b.id,
+            text: b.text,
+            x: Math.round((b.x - min_x) * sx),
+            y: Math.round((b.y - min_y) * sy),
+            w: Math.round(w * sx),
+            h: Math.round(h * sy),
+          }
+        })
+
+        const res = await api(`/api/sessions/${activeSessionId}/augment`, {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "rearrange",
+            prompt: augmentPrompt,
+            block_ids: scopeIds,
+            image_data_url,
+            frame: { min_x, min_y, max_x, max_y },
+            blocks_in_frame,
+          }),
+        })
+
+        // Convert returned moves (0–1000) back to content pixels
+        const movesById: Record<string, { x: number; y: number }> = {}
+        for (const m of (res.moves || []) as Array<{ block_id: string; x: number; y: number }>) {
+          movesById[m.block_id] = {
+            x: Math.round(min_x + m.x / sx),
+            y: Math.round(min_y + m.y / sy),
+          }
+        }
+        // Build proposed rect set: moved blocks at new pos, others at current pos.
+        // Only in-scope blocks get pushed around — out-of-scope blocks keep their pos.
+        const proposed: BlockRect[] = inScope.map(b => {
+          const w = b.width ?? 180
+          const h = b.height && b.height > 0 ? b.height : 60
+          const target = movesById[b.id]
+          return {
+            id: b.id,
+            x: target ? target.x : b.x,
+            y: target ? target.y : b.y,
+            w, h,
+          }
+        })
+        const resolved = resolveCollisions(proposed)
+
+        // Apply: PATCH every block whose final pos differs by > 1px from its prior DB pos
+        const priorPositions = inScope.map(b => ({ id: b.id, x: b.x, y: b.y }))
+        for (const b of inScope) {
+          const np = resolved[b.id]
+          if (!np) continue
+          if (Math.abs(np.x - b.x) > 1 || Math.abs(np.y - b.y) > 1) {
+            await api(`/api/notes/${b.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ x: np.x, y: np.y }),
+            }).catch(() => {})
+          }
+        }
+
+        // Refresh
+        const data = await api(`/api/sessions/${activeSessionId}`)
+        setBlocks(data.notes || [])
+        setConnections(data.connections || [])
+
+        // Server already applied connection diff atomically; collect ids for undo.
+        const addedConnIds: string[] = (res.added_connections || []).map((c: any) => c.id)
+        const removedConns: { id: string; from_block_id: string; to_block_id: string; label?: string }[] =
+          (res.removed_connections || []).map((c: any) => ({
+            id: c.id,
+            from_block_id: c.from_block_id,
+            to_block_id: c.to_block_id,
+            label: c.label,
+          }))
+
+        undoStackRef.current.push({
+          kind: "rearrange",
+          prior_positions: priorPositions,
+          added_connection_ids: addedConnIds,
+          removed_connections: removedConns,
+        })
+        showToast(
+          `Rearranged ${Object.keys(movesById).length} block${Object.keys(movesById).length === 1 ? "" : "s"}` +
+          (addedConnIds.length || removedConns.length
+            ? ` · +${addedConnIds.length}/-${removedConns.length} conns`
+            : "")
+        )
+        setAugmentOpen(false)
+        setAugmentPrompt("")
+        setAugmentRearrange(false)
+        return
+      }
+
       const res = await api(`/api/sessions/${activeSessionId}/augment`, {
         method: "POST",
         body: JSON.stringify({
@@ -993,7 +1255,7 @@ export default function Page() {
     } finally {
       setAugmentBusy(false)
     }
-  }, [activeSessionId, augmentPrompt, selectedIds, blocks, showToast, augmentStructured])
+  }, [activeSessionId, augmentPrompt, selectedIds, blocks, showToast, augmentStructured, augmentRearrange])
 
   // ── Export to wiki (writes to ~/.openfang/wikis/<agent>/pages/) ──────────
   const [wikiBusy, setWikiBusy] = useState(false)
@@ -1485,9 +1747,12 @@ export default function Page() {
           <div className="absolute inset-x-0 bottom-4 z-40 flex justify-center">
             <div className="flex w-[600px] max-w-[90%] flex-col gap-3 rounded-sm border border-white/10 bg-black/85 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
               <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-white/45">
-                {selectedIds.size > 0
-                  ? `Augment ${selectedIds.size} selected block${selectedIds.size === 1 ? "" : "s"}`
-                  : `Augment whole canvas · ${blocks.length} block${blocks.length === 1 ? "" : "s"}`}
+                {(() => {
+                  const verb = augmentRearrange ? "Rearrange" : "Augment"
+                  return selectedIds.size > 0
+                    ? `${verb} ${selectedIds.size} selected block${selectedIds.size === 1 ? "" : "s"}`
+                    : `${verb} whole canvas · ${blocks.length} block${blocks.length === 1 ? "" : "s"}`
+                })()}
               </div>
               <input
                 ref={augmentInputRef}
@@ -1501,7 +1766,9 @@ export default function Page() {
                   }
                 }}
                 disabled={augmentBusy}
-                placeholder={augmentStructured
+                placeholder={augmentRearrange
+                  ? "How should the layout change? (e.g. spread as a left-to-right timeline)"
+                  : augmentStructured
                   ? "Describe the structure (e.g. concept map with causal arrows)"
                   : "Instruction (e.g. reformat as checklist)"}
                 className="rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-primary/50 transition-colors"
@@ -1511,7 +1778,11 @@ export default function Page() {
                   type="checkbox"
                   data-testid="augment-structured"
                   checked={augmentStructured}
-                  onChange={e => setAugmentStructured(e.target.checked)}
+                  onChange={e => {
+                    const v = e.target.checked
+                    setAugmentStructured(v)
+                    if (v) setAugmentRearrange(false)
+                  }}
                   disabled={augmentBusy}
                   className="accent-primary"
                 />
@@ -1519,6 +1790,28 @@ export default function Page() {
                   <b className="text-foreground">Structured output</b> — multiple blocks + connections
                 </span>
               </label>
+              <label className="flex items-center gap-2 font-mono text-[10px] text-white/55 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  data-testid="augment-rearrange"
+                  checked={augmentRearrange}
+                  onChange={e => {
+                    const v = e.target.checked
+                    setAugmentRearrange(v)
+                    if (v) setAugmentStructured(false)
+                  }}
+                  disabled={augmentBusy}
+                  className="accent-primary"
+                />
+                <span>
+                  <b className="text-foreground">Rearrange</b> — let AI move blocks into a new layout (vision)
+                </span>
+              </label>
+              {augmentRearrange && viewMode !== "canvas" && (
+                <div className="font-mono text-[10px] text-amber-400/80">
+                  Switch to Canvas view to use Rearrange (we snapshot the canvas for the model).
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <div className="font-mono text-[10px] text-destructive">{augmentError}</div>
                 <div className="flex gap-2">
@@ -1533,11 +1826,13 @@ export default function Page() {
                   </button>
                   <button
                     data-testid="augment-submit"
-                    disabled={augmentBusy || !augmentPrompt.trim()}
+                    disabled={augmentBusy || !augmentPrompt.trim() || (augmentRearrange && viewMode !== "canvas")}
                     onClick={submitAugment}
                     className="rounded-sm bg-primary hover:bg-primary/90 px-4 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-primary-foreground disabled:opacity-30 transition-all active:scale-[0.98]"
                   >
-                    {augmentBusy ? "Augmenting..." : "Augment"}
+                    {augmentBusy
+                      ? (augmentRearrange ? "Rearranging..." : "Augmenting...")
+                      : (augmentRearrange ? "Rearrange" : "Augment")}
                   </button>
                 </div>
               </div>

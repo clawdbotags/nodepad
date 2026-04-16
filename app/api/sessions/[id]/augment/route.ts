@@ -7,9 +7,12 @@ import {
   createConnection,
   deleteNote,
   deleteConnection,
+  updateNote,
   getSettings,
 } from "@/lib/server/db"
 import { decrypt, isSensitiveKey } from "@/lib/server/crypto"
+
+const REARRANGE_DEFAULT_MODEL = "google/gemini-3-flash"
 
 function genId() {
   return Math.random().toString(36).slice(2, 10)
@@ -146,6 +149,148 @@ Return ONLY valid JSON. No markdown fences, no prose, no commentary. The exact s
   return { blocks: outBlocks, connections: outConns }
 }
 
+// Rearrange: vision-grounded freeform layout. The LLM gets an image of the
+// canvas plus a JSON list of in-scope blocks (with text + (x, y, w, h) in a
+// 0–1000 normalized frame matching the image) and returns new (x, y) positions
+// for whichever blocks should move, plus optional connection edits.
+type RearrangeResult = {
+  moves: { block_id: string; x: number; y: number }[]
+  new_connections: { from_id: string; to_id: string }[]
+  removed_connection_ids: string[]
+}
+
+type FrameBlock = { id: string; text: string; x: number; y: number; w: number; h: number }
+type FrameConn = { id: string; from_id: string; to_id: string }
+
+async function callLLMRearrange(
+  prompt: string,
+  blocksInFrame: FrameBlock[],
+  existingConns: FrameConn[],
+  imageDataUrl: string,
+  settings: Record<string, string>
+): Promise<RearrangeResult> {
+  const provider = settings.provider || "openrouter"
+  const apiKey = settings.apiKey || ""
+  // Allow per-mode override via `rearrangeModelId`, else fall back to global modelId,
+  // else the spec-mandated default (Gemini 3 Flash).
+  const modelId = settings.rearrangeModelId || settings.modelId || REARRANGE_DEFAULT_MODEL
+  const baseUrl =
+    settings.customBaseUrl ||
+    (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
+  if (!apiKey) throw new Error("No API key configured. Set it via /api/settings.")
+
+  const allowedIds = new Set(blocksInFrame.map(b => b.id))
+  const allowedConnIds = new Set(existingConns.map(c => c.id))
+
+  const systemPrompt = `You are a spatial layout assistant for a thinking canvas.
+
+You will receive:
+1. An image of the current canvas. Each text block is visible at its actual position.
+2. A JSON list of the in-scope blocks with their text and their (x, y, w, h) in
+   the image's coordinate frame, where the image spans [0, 1000] on both axes.
+3. The user's instruction describing how they want the blocks rearranged.
+
+Your job: decide a new (x, y) for each in-scope block so the resulting layout
+matches the user's instruction, using the image to ground your spatial sense.
+You may also propose new connections between in-scope blocks, or removals of
+existing within-scope connections, when the instruction implies it.
+
+Constraints:
+- Coordinates are in the same 0–1000 frame. Stay within [0, 1000] on both axes.
+- Do not change block text. Do not add or delete blocks. Do not change block
+  sizes — w and h are given so you can avoid overlaps; you do not output them.
+- Avoid heavy overlaps. The client will nudge tiny overlaps apart, but two
+  blocks should not be assigned the same point.
+- Only include blocks whose position should change in "moves". Omitting a block
+  means "leave it where it is."
+- Connection ids in "removed_connection_ids" must come from the supplied
+  existing_connections list.
+
+Return ONLY valid JSON, no markdown, no commentary, in this exact shape:
+
+{
+  "moves": [{ "block_id": "abc123", "x": 240, "y": 600 }],
+  "new_connections": [{ "from_id": "abc123", "to_id": "def456" }],
+  "removed_connection_ids": []
+}`
+
+  const userText = `Instruction: ${prompt}
+
+In-scope blocks (coords already in 0–1000 frame):
+${JSON.stringify(blocksInFrame, null, 2)}
+
+Existing within-scope connections:
+${JSON.stringify(existingConns, null, 2)}`
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://nodepad.local",
+      "X-Title": "nodepad-v2",
+    },
+    body: JSON.stringify({
+      model: modelId,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: userText },
+            { type: "image_url", image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    // Detect the common "model doesn't accept images" failure shape and rewrite.
+    if (/image|multimodal|vision|content type/i.test(text)) {
+      throw new Error(
+        `Model "${modelId}" doesn't accept images. Switch to a vision-capable model (e.g. ${REARRANGE_DEFAULT_MODEL}) in settings.`
+      )
+    }
+    throw new Error(`LLM call failed (${res.status}): ${text.slice(0, 300)}`)
+  }
+  const data = await res.json()
+  const content = data?.choices?.[0]?.message?.content
+  if (typeof content !== "string") throw new Error("LLM returned no content")
+
+  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim()
+  let parsed: any
+  try { parsed = JSON.parse(cleaned) } catch (e: any) {
+    throw new Error(`LLM returned invalid JSON: ${e.message}; got: ${cleaned.slice(0, 200)}`)
+  }
+
+  const clamp = (v: number) => Math.max(0, Math.min(1000, v))
+  const moves = Array.isArray(parsed.moves)
+    ? parsed.moves
+        .filter((m: any) =>
+          m && typeof m.block_id === "string" && allowedIds.has(m.block_id)
+          && typeof m.x === "number" && typeof m.y === "number"
+          && Number.isFinite(m.x) && Number.isFinite(m.y))
+        .map((m: any) => ({ block_id: m.block_id as string, x: clamp(m.x), y: clamp(m.y) }))
+    : []
+  const newConns = Array.isArray(parsed.new_connections)
+    ? parsed.new_connections
+        .filter((c: any) =>
+          c && typeof c.from_id === "string" && typeof c.to_id === "string"
+          && c.from_id !== c.to_id
+          && allowedIds.has(c.from_id) && allowedIds.has(c.to_id))
+        .map((c: any) => ({ from_id: c.from_id as string, to_id: c.to_id as string }))
+    : []
+  const removed = Array.isArray(parsed.removed_connection_ids)
+    ? parsed.removed_connection_ids.filter((id: any) => typeof id === "string" && allowedConnIds.has(id))
+    : []
+
+  return { moves, new_connections: newConns, removed_connection_ids: removed }
+}
+
 async function callLLM(prompt: string, blocks: string[], settings: Record<string, string>): Promise<string> {
   const provider = settings.provider || "openrouter"
   const apiKey = settings.apiKey || ""
@@ -205,7 +350,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const body = await req.json().catch(() => ({}))
     const prompt: string = body.prompt || ""
     const selectedIds: string[] = Array.isArray(body.block_ids) ? body.block_ids : []
-    const mode: string = body.mode === "structured" ? "structured" : "default"
+    const mode: string =
+      body.mode === "structured" ? "structured"
+      : body.mode === "rearrange" ? "rearrange"
+      : "default"
 
     if (!prompt.trim()) return NextResponse.json({ error: "prompt required" }, { status: 400 })
 
@@ -219,6 +367,84 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (scopeNotes.length === 0) return NextResponse.json({ error: "no blocks in scope" }, { status: 400 })
 
     const settings = loadSettings()
+
+    // ── Rearrange mode: vision-grounded, freeform spatial layout ──────────────
+    if (mode === "rearrange") {
+      const imageDataUrl: string = body.image_data_url || ""
+      const blocksInFrame: FrameBlock[] = Array.isArray(body.blocks_in_frame) ? body.blocks_in_frame : []
+      if (!imageDataUrl.startsWith("data:image/")) {
+        return NextResponse.json({ error: "image_data_url required (canvas snapshot)" }, { status: 400 })
+      }
+      if (blocksInFrame.length === 0) {
+        return NextResponse.json({ error: "blocks_in_frame required" }, { status: 400 })
+      }
+      // Reject grossly oversized images (~700KB base64 ≈ 512KB binary)
+      if (imageDataUrl.length > 700_000) {
+        return NextResponse.json({ error: "snapshot too large; zoom in or select a subset" }, { status: 413 })
+      }
+
+      // Within-scope existing connections — these are the only ones the LLM may remove.
+      const withinScopeConns: FrameConn[] = allConns
+        .filter(c => scopeSet.has(c.from_block_id) && scopeSet.has(c.to_block_id))
+        .map(c => ({ id: c.id, from_id: c.from_block_id, to_id: c.to_block_id }))
+
+      const result = await callLLMRearrange(prompt, blocksInFrame, withinScopeConns, imageDataUrl, settings)
+
+      // Snapshot for undo: prior positions of every scope block (regardless of whether it moves —
+      // so a redo of the rearrange replays the same diff), plus the full set of within-scope
+      // connections (so we can restore those deleted by the LLM) and which connection IDs we
+      // create now (so undo deletes them).
+      const priorPositions = scopeNotes.map(n => ({ id: n.id, x: n.x, y: n.y }))
+      const removedConnObjs = allConns.filter(c => result.removed_connection_ids.includes(c.id))
+
+      // Apply within a single transaction
+      const db = getDb()
+      const addedConnIds: string[] = []
+      const newConnRecords: { id: string; from_id: string; to_id: string }[] = []
+      const tx = db.transaction(() => {
+        for (const m of result.moves) {
+          updateNote(m.block_id, { x: m.x, y: m.y })
+        }
+        for (const id of result.removed_connection_ids) {
+          deleteConnection(id)
+        }
+        for (const c of result.new_connections) {
+          // Skip duplicate edges (same pair already exists, or we're re-creating one we just removed)
+          const dupe = allConns.some(
+            ec => !result.removed_connection_ids.includes(ec.id) &&
+                  ((ec.from_block_id === c.from_id && ec.to_block_id === c.to_id) ||
+                   (ec.from_block_id === c.to_id && ec.to_block_id === c.from_id))
+          )
+          if (dupe) continue
+          const newId = genId()
+          createConnection({ id: newId, session_id: sessionId, from_block_id: c.from_id, to_block_id: c.to_id })
+          addedConnIds.push(newId)
+          newConnRecords.push({ id: newId, from_id: c.from_id, to_id: c.to_id })
+        }
+      })
+      tx()
+
+      // Pull back the moved notes so the client has the canonical post-write state
+      const movedNotes = result.moves.map(m => {
+        const n = listNotes(sessionId).find(x => x.id === m.block_id)
+        return n ? { id: n.id, x: n.x, y: n.y } : null
+      }).filter(Boolean)
+
+      return NextResponse.json({
+        mode: "rearrange",
+        moved: movedNotes,
+        new_connections: newConnRecords,
+        removed_connection_ids: result.removed_connection_ids,
+        snapshot: {
+          mode: "rearrange" as const,
+          prior_positions: priorPositions,
+          added_connection_ids: addedConnIds,
+          removed_connections: removedConnObjs.map(c => ({
+            id: c.id, from_block_id: c.from_block_id, to_block_id: c.to_block_id, label: c.label,
+          })),
+        },
+      })
+    }
 
     // ── Structured mode: LLM returns {blocks, connections} → create many notes + connections ──
     if (mode === "structured") {
