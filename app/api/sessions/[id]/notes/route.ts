@@ -19,6 +19,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     text: body.text || "",
     x: body.x ?? 0,
     y: body.y ?? 0,
+    width: body.width,
+    height: body.height,
+    kind: body.kind,
     is_ai_generated: !!body.is_ai_generated,
   })
   return NextResponse.json(n)

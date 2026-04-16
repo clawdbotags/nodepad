@@ -8,6 +8,7 @@
     "start": "next start -p 3034"
   },
   "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.0",
     "@types/d3-force": "^3.0.10",
     "@types/d3-selection": "^3.0.11",
     "better-sqlite3": "^11.5.0",

@@ -1,6 +1,15 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  ExcalidrawOverlay,
+  DrawingPreview,
+  parseScene,
+  serializeScene,
+  emptyScene,
+  renderSceneToPng,
+  type ExcalidrawScene,
+} from "@/components/excalidraw-overlay"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -11,6 +20,7 @@ interface Block {
   y: number
   width?: number
   height?: number
+  kind?: string  // 'text' (default) | 'drawing' (Excalidraw scene JSON in `text`)
   is_ai_generated: number | boolean
   session_id?: string
 }
@@ -225,7 +235,8 @@ function bspWeight(n: BSPNode): number {
 }
 
 function TiledView({ blocks, connections, selectedIds, onSelect,
-  editingId, editingText, onStartEdit, onChangeEdit, onSaveEdit, onCancelEdit }: {
+  editingId, editingText, onStartEdit, onChangeEdit, onSaveEdit, onCancelEdit,
+  onOpenDrawing }: {
   blocks: Block[]
   connections: Connection[]
   selectedIds: Set<string>
@@ -236,6 +247,7 @@ function TiledView({ blocks, connections, selectedIds, onSelect,
   onChangeEdit: (text: string) => void
   onSaveEdit: () => void
   onCancelEdit: () => void
+  onOpenDrawing: (id: string) => void
 }) {
   const tree = useMemo(() => buildBSP(blocks.map(b => b.id)), [blocks])
   const byId = useMemo(() => { const m: Record<string, Block> = {}; for (const b of blocks) m[b.id] = b; return m }, [blocks])
@@ -248,6 +260,7 @@ function TiledView({ blocks, connections, selectedIds, onSelect,
       const isSel = selectedIds.has(b.id)
       const isAI = !!b.is_ai_generated
       const isEditing = editingId === b.id
+      const isDrawing = b.kind === "drawing"
       // Connection count for this block
       const connCount = connections.filter(c => c.from_block_id === b.id || c.to_block_id === b.id).length
       return (
@@ -256,44 +269,70 @@ function TiledView({ blocks, connections, selectedIds, onSelect,
           className="flex flex-1 p-0.5 overflow-hidden min-w-0 min-h-0"
         >
           <div
+            data-testid={`tile-${b.id}`}
+            data-block-kind={b.kind || "text"}
             onClick={e => { if (isEditing) return; onSelect(b.id, e.ctrlKey || e.metaKey) }}
-            onDoubleClick={e => { e.stopPropagation(); onStartEdit(b.id, b.text) }}
-            className={`flex flex-col flex-1 overflow-hidden bg-card/80 transition-all hover:bg-card ${
+            onDoubleClick={e => {
+              e.stopPropagation()
+              if (isDrawing) { onOpenDrawing(b.id); return }
+              onStartEdit(b.id, b.text)
+            }}
+            className={`relative flex flex-col flex-1 overflow-hidden bg-card/80 transition-all hover:bg-card ${
               isEditing ? "cursor-text" : "cursor-pointer"
             } ${isSel ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]" : ""}`}
             style={{
               borderLeft: `3px solid ${isAI ? "var(--primary)" : "rgba(255,255,255,0.08)"}`,
             }}
           >
-            <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
-              {isEditing ? (
-                <textarea
-                  data-testid={`tile-edit-${b.id}`}
-                  autoFocus
-                  value={editingText}
-                  onChange={e => onChangeEdit(e.target.value)}
-                  onBlur={onSaveEdit}
-                  onClick={e => e.stopPropagation()}
-                  onMouseDown={e => e.stopPropagation()}
-                  onKeyDown={e => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault()
-                      onSaveEdit()
-                    } else if (e.key === "Escape") {
-                      e.preventDefault()
-                      onCancelEdit()
-                    }
-                  }}
-                  className="w-full h-full min-h-[80px] resize-none bg-transparent outline-none text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap break-words"
-                />
-              ) : (
-                <div className="whitespace-pre-wrap break-words text-sm text-foreground/90 leading-relaxed">
-                  {b.text}
-                </div>
-              )}
-            </div>
+            {isDrawing ? (
+              <div className="flex-1 overflow-hidden bg-white/[0.02] relative">
+                <DrawingPreview scene={parseScene(b.text)} />
+                <button
+                  data-testid={`tile-drawing-expand-${b.id}`}
+                  onClick={e => { e.stopPropagation(); onOpenDrawing(b.id) }}
+                  className="absolute right-1 top-1 z-10 rounded-sm bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-white/70 hover:bg-black/80 hover:text-white transition-colors"
+                  title="Open editor"
+                >
+                  ⛶
+                </button>
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+                {isEditing ? (
+                  <textarea
+                    data-testid={`tile-edit-${b.id}`}
+                    autoFocus
+                    value={editingText}
+                    onChange={e => onChangeEdit(e.target.value)}
+                    onBlur={onSaveEdit}
+                    onClick={e => e.stopPropagation()}
+                    onMouseDown={e => e.stopPropagation()}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault()
+                        onSaveEdit()
+                      } else if (e.key === "Escape") {
+                        e.preventDefault()
+                        onCancelEdit()
+                      }
+                    }}
+                    className="w-full h-full min-h-[80px] resize-none bg-transparent outline-none text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap break-words"
+                  />
+                ) : (
+                  <div className="whitespace-pre-wrap break-words text-sm text-foreground/90 leading-relaxed">
+                    {b.text}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex items-center justify-between px-3 py-1.5 border-t border-white/5 font-mono text-[8px] font-bold uppercase tracking-wider text-muted-foreground/40">
-              <span>{isEditing ? "editing — ⌘↵ save · esc cancel" : (isAI ? "ai" : "user")}</span>
+              <span>
+                {isEditing
+                  ? "editing — ⌘↵ save · esc cancel"
+                  : isDrawing
+                    ? (isAI ? "ai · sketch" : "sketch")
+                    : (isAI ? "ai" : "user")}
+              </span>
               {connCount > 0 && <span>{connCount} link{connCount !== 1 ? "s" : ""}</span>}
             </div>
           </div>
@@ -657,6 +696,48 @@ export default function Page() {
     })
     setBlocks(prev => [...prev, n])
   }, [activeSessionId, blocks.length])
+
+  // ── Drawing-block creation + fullscreen editor state ─────────────────────
+  // Creates a kind='drawing' block, opens it immediately in the overlay so
+  // the user can sketch right away. Empty scene initially.
+  const createDrawingBlock = useCallback(async () => {
+    if (!activeSessionId) return
+    const idx = blocks.length
+    const cols = 4
+    const x = 100 + (idx % cols) * 220
+    const y = 100 + Math.floor(idx / cols) * 120
+    const n: Block = await api(`/api/sessions/${activeSessionId}/notes`, {
+      method: "POST",
+      body: JSON.stringify({
+        text: serializeScene(emptyScene()),
+        x, y,
+        width: 360,
+        height: 280,
+        kind: "drawing",
+      }),
+    })
+    setBlocks(prev => [...prev, n])
+    setDrawingOverlayId(n.id)
+  }, [activeSessionId, blocks.length])
+
+  const [drawingOverlayId, setDrawingOverlayId] = useState<string | null>(null)
+  const drawingOverlayBlock = useMemo(
+    () => (drawingOverlayId ? blocks.find(b => b.id === drawingOverlayId) || null : null),
+    [drawingOverlayId, blocks]
+  )
+
+  const saveDrawingScene = useCallback(async (id: string, scene: ExcalidrawScene) => {
+    const text = serializeScene(scene)
+    try {
+      const updated: Block = await api(`/api/notes/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ text }),
+      })
+      setBlocks(prev => prev.map(b => (b.id === id ? updated : b)))
+    } catch (e: any) {
+      showToast(`Drawing save error: ${e.message}`)
+    }
+  }, [showToast])
 
   // ── Delete selected blocks (with in-app confirm) ─────────────────────────
   const performDeleteSelected = useCallback(async () => {
@@ -1353,12 +1434,28 @@ export default function Page() {
         return
       }
 
+      // If any in-scope blocks are drawings, render them to PNG so the LLM can
+      // actually see the sketch. Skip empty drawings; cap at maxDim=1024 to
+      // keep payload under the per-image budget.
+      const drawing_images: Record<string, string> = {}
+      const inScopeDrawings = blocks.filter(b => scopeIds.includes(b.id) && b.kind === "drawing")
+      for (const b of inScopeDrawings) {
+        try {
+          const url = await renderSceneToPng(parseScene(b.text), { maxDim: 1024 })
+          if (url) drawing_images[b.id] = url
+        } catch (e) {
+          // Non-fatal; LLM will see the placeholder text only
+          console.warn("renderSceneToPng failed for", b.id, e)
+        }
+      }
+
       const res = await api(`/api/sessions/${activeSessionId}/augment`, {
         method: "POST",
         body: JSON.stringify({
           prompt: augmentPrompt,
           block_ids: scopeIds,
           mode: augmentStructured ? "structured" : "default",
+          drawing_images: Object.keys(drawing_images).length > 0 ? drawing_images : undefined,
         }),
       })
       // Refresh first (so UI reflects whatever the server did)
@@ -1736,6 +1833,7 @@ export default function Page() {
             onChangeEdit={setEditingText}
             onSaveEdit={saveEdit}
             onCancelEdit={() => { setEditingId(null); setEditingText("") }}
+            onOpenDrawing={id => setDrawingOverlayId(id)}
           />
         )}
 
@@ -1873,13 +1971,22 @@ export default function Page() {
             const isAI = !!b.is_ai_generated
             const isHovered = hoveredBlockId === b.id
             const isEditing = editingId === b.id
+            const isDrawing = b.kind === "drawing"
             return (
               <div
                 key={b.id}
                 data-block-id={b.id}
                 data-testid={`block-${b.id}`}
+                data-block-kind={b.kind || "text"}
                 onMouseDown={e => onBlockMouseDown(e, b)}
-                onDoubleClick={e => onBlockDoubleClick(e, b)}
+                onDoubleClick={e => {
+                  if (isDrawing) {
+                    e.stopPropagation()
+                    setDrawingOverlayId(b.id)
+                    return
+                  }
+                  onBlockDoubleClick(e, b)
+                }}
                 onMouseEnter={() => setHoveredBlockId(b.id)}
                 onMouseLeave={() => setHoveredBlockId(null)}
                 style={{
@@ -1887,17 +1994,19 @@ export default function Page() {
                   top: b.y,
                   width: b.width ?? 180,
                   height: b.height && b.height > 0 ? b.height : undefined,
-                  minHeight: 60,
+                  minHeight: isDrawing ? 160 : 60,
                   zIndex: 2,
                   borderLeft: isAI ? "3px solid var(--primary)" : "3px solid rgba(255,255,255,0.08)",
                 }}
-                className={`absolute cursor-move rounded-sm bg-card/90 backdrop-blur-sm px-3 py-2 text-sm text-foreground overflow-hidden transition-[box-shadow,ring-color,background-color] duration-150 ${
+                className={`absolute cursor-move rounded-sm bg-card/90 backdrop-blur-sm ${isDrawing ? "p-1" : "px-3 py-2"} text-sm text-foreground overflow-hidden transition-[box-shadow,ring-color,background-color] duration-150 ${
                   isSelected
                     ? "ring-1 ring-primary shadow-[0_0_0_1px_var(--primary)]"
                     : "ring-1 ring-white/[0.07] hover:ring-white/15"
                 }`}
               >
-                {isEditing ? (
+                {isDrawing ? (
+                  <DrawingPreview scene={parseScene(b.text)} className="bg-white/[0.02]" />
+                ) : isEditing ? (
                   <textarea
                     data-testid={`block-edit-${b.id}`}
                     autoFocus
@@ -1915,6 +2024,21 @@ export default function Page() {
                   />
                 ) : (
                   <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">{b.text}</div>
+                )}
+                {/* Drawing fullscreen button */}
+                {isDrawing && (
+                  <button
+                    data-testid={`drawing-expand-${b.id}`}
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => {
+                      e.stopPropagation()
+                      setDrawingOverlayId(b.id)
+                    }}
+                    className="absolute right-1 top-1 z-10 rounded-sm bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-white/70 hover:bg-black/80 hover:text-white transition-colors"
+                    title="Open editor"
+                  >
+                    ⛶
+                  </button>
                 )}
                 {/* Connect handle on hover */}
                 {isHovered && !isEditing && !connectingFrom && (
@@ -2174,6 +2298,17 @@ export default function Page() {
             />
           </div>
           <div className="flex items-center gap-3">
+            <button
+              data-testid="new-drawing-btn"
+              onClick={createDrawingBlock}
+              className="flex h-7 items-center gap-1.5 rounded-sm border border-white/10 bg-white/5 px-2 font-mono text-[10px] font-bold uppercase tracking-wider text-white/65 hover:border-primary/40 hover:text-primary transition-all"
+              title="New drawing block"
+              disabled={!activeSessionId}
+            >
+              <span className="text-base leading-none">✎</span>
+              <span>Sketch</span>
+            </button>
+            <div className="h-4 w-px bg-white/10" />
             <div className="flex items-center gap-2">
               <kbd className="flex h-5 items-center rounded border border-white/10 bg-white/5 px-1.5 font-mono text-[9px] text-white/60">
                 <span className="text-[11px] mr-1">⌘</span><span>Z</span>
@@ -2231,6 +2366,16 @@ export default function Page() {
           >
             {toast}
           </div>
+        )}
+
+        {/* Excalidraw fullscreen overlay — single instance, scene swapped per block */}
+        {drawingOverlayBlock && (
+          <ExcalidrawOverlay
+            key={drawingOverlayBlock.id}
+            initialScene={parseScene(drawingOverlayBlock.text)}
+            onSave={scene => saveDrawingScene(drawingOverlayBlock.id, scene)}
+            onClose={() => setDrawingOverlayId(null)}
+          />
         )}
       </main>
     </div>

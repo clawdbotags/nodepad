@@ -37,6 +37,7 @@ export function getDb(): Database.Database {
       y                REAL NOT NULL DEFAULT 0,
       width            REAL NOT NULL DEFAULT 180,
       height           REAL NOT NULL DEFAULT 0,
+      kind             TEXT NOT NULL DEFAULT 'text',
       is_ai_generated  INTEGER NOT NULL DEFAULT 0,
       created_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
@@ -59,7 +60,7 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_connections_session ON connections(session_id);
   `)
 
-  // Migration: add width/height columns to existing DBs (idempotent)
+  // Migration: add width/height/kind columns to existing DBs (idempotent)
   try {
     const cols = db.prepare("PRAGMA table_info(notes)").all() as any[]
     const colNames = new Set(cols.map(c => c.name))
@@ -69,8 +70,11 @@ export function getDb(): Database.Database {
     if (!colNames.has("height")) {
       db.exec("ALTER TABLE notes ADD COLUMN height REAL NOT NULL DEFAULT 0")
     }
+    if (!colNames.has("kind")) {
+      db.exec("ALTER TABLE notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
+    }
   } catch (e) {
-    console.warn("notes width/height migration skipped:", (e as Error).message)
+    console.warn("notes width/height/kind migration skipped:", (e as Error).message)
   }
 
   // Migration: add label column to connections (idempotent)
@@ -156,6 +160,7 @@ export interface NoteRow {
   y: number
   width: number
   height: number
+  kind: string
   is_ai_generated: number
   created_at: number
   updated_at: number
@@ -173,13 +178,16 @@ export function createNote(note: {
   text: string
   x?: number
   y?: number
+  width?: number
+  height?: number
+  kind?: string
   is_ai_generated?: boolean
 }): NoteRow {
   const now = Date.now()
   getDb()
     .prepare(
-      `INSERT INTO notes (id, session_id, text, x, y, is_ai_generated, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO notes (id, session_id, text, x, y, width, height, kind, is_ai_generated, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       note.id,
@@ -187,6 +195,9 @@ export function createNote(note: {
       note.text,
       note.x ?? 0,
       note.y ?? 0,
+      note.width ?? 180,
+      note.height ?? 0,
+      note.kind ?? "text",
       note.is_ai_generated ? 1 : 0,
       now,
       now

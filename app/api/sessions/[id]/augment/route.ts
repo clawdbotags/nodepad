@@ -41,7 +41,12 @@ type StructuredResult = {
   connections: { from: number; to: number }[]
 }
 
-async function callLLMStructured(prompt: string, blocks: string[], settings: Record<string, string>): Promise<StructuredResult> {
+// A "source block" passed into the LLM. When `image_data_url` is set, it is a
+// drawing/sketch and the textual rendering is just a placeholder; the actual
+// content is attached as an image_url content part.
+type SourceBlock = { text: string; image_data_url?: string }
+
+async function callLLMStructured(prompt: string, blocks: SourceBlock[], settings: Record<string, string>): Promise<StructuredResult> {
   const provider = settings.provider || "openrouter"
   const apiKey = settings.apiKey || ""
   const modelId = settings.modelId || "anthropic/claude-3.5-sonnet"
@@ -97,8 +102,20 @@ Return ONLY valid JSON. No markdown fences, no prose, no commentary. The exact s
 - Do not produce connections without a stated reason; every edge should correspond to something in the source.`
 
   const userPrompt = `Instruction: ${prompt}\n\nSource blocks:\n\n${blocks
-    .map((t, i) => `--- Block ${i + 1} ---\n${t}`)
+    .map((b, i) => {
+      if (b.image_data_url) {
+        return `--- Block ${i + 1} (sketch — see attached image #${i + 1}) ---\n${b.text || "(visual sketch)"}`
+      }
+      return `--- Block ${i + 1} ---\n${b.text}`
+    })
     .join("\n\n")}`
+
+  // Multimodal user content: text first, then any drawing images in source order.
+  const userContent: any[] = [{ type: "text", text: userPrompt }]
+  for (const b of blocks) {
+    if (b.image_data_url) userContent.push({ type: "image_url", image_url: { url: b.image_data_url } })
+  }
+  const useMultimodal = userContent.length > 1
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -112,7 +129,7 @@ Return ONLY valid JSON. No markdown fences, no prose, no commentary. The exact s
       model: modelId,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: "user", content: useMultimodal ? userContent : userPrompt },
       ],
       temperature: 0.3,
       response_format: { type: "json_object" },
@@ -291,7 +308,7 @@ ${JSON.stringify(existingConns, null, 2)}`
   return { moves, new_connections: newConns, removed_connection_ids: removed }
 }
 
-async function callLLM(prompt: string, blocks: string[], settings: Record<string, string>): Promise<string> {
+async function callLLM(prompt: string, blocks: SourceBlock[], settings: Record<string, string>): Promise<string> {
   const provider = settings.provider || "openrouter"
   const apiKey = settings.apiKey || ""
   const modelId = settings.modelId || "anthropic/claude-3.5-sonnet"
@@ -313,8 +330,19 @@ Rules:
 - Preserve the user's original tone and language.`
 
   const userPrompt = `Instruction: ${prompt}\n\nSelected blocks:\n\n${blocks
-    .map((t, i) => `--- Block ${i + 1} ---\n${t}`)
+    .map((b, i) => {
+      if (b.image_data_url) {
+        return `--- Block ${i + 1} (sketch — see attached image #${i + 1}) ---\n${b.text || "(visual sketch)"}`
+      }
+      return `--- Block ${i + 1} ---\n${b.text}`
+    })
     .join("\n\n")}`
+
+  const userContent: any[] = [{ type: "text", text: userPrompt }]
+  for (const b of blocks) {
+    if (b.image_data_url) userContent.push({ type: "image_url", image_url: { url: b.image_data_url } })
+  }
+  const useMultimodal = userContent.length > 1
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -328,7 +356,7 @@ Rules:
       model: modelId,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: "user", content: useMultimodal ? userContent : userPrompt },
       ],
       temperature: 0.4,
     }),
@@ -442,9 +470,24 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       })
     }
 
+    // Drawing PNGs the client may have rendered for any in-scope drawing blocks.
+    // Shape: { [block_id]: "data:image/png;base64,..." }
+    const drawingImages: Record<string, string> = (body && typeof body.drawing_images === "object" && body.drawing_images) || {}
+
+    // Build SourceBlock list once, in scope order. For drawing kind, the text
+    // field stores the Excalidraw scene JSON which is huge and useless to the
+    // LLM; replace with a placeholder and attach the PNG.
+    const sourceBlocks: SourceBlock[] = scopeNotes.map(n => {
+      if (n.kind === "drawing") {
+        const url = drawingImages[n.id]
+        return { text: "(visual sketch)", image_data_url: typeof url === "string" && url.startsWith("data:image/") ? url : undefined }
+      }
+      return { text: n.text }
+    })
+
     // ── Structured mode: LLM returns {blocks, connections} → create many notes + connections ──
     if (mode === "structured") {
-      const structured = await callLLMStructured(prompt, scopeNotes.map(n => n.text), settings)
+      const structured = await callLLMStructured(prompt, sourceBlocks, settings)
 
       // Snapshot for undo
       const snapshot = {
@@ -507,7 +550,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       })
     }
 
-    const newText = await callLLM(prompt, scopeNotes.map(n => n.text), settings)
+    const newText = await callLLM(prompt, sourceBlocks, settings)
 
     // Centroid position
     const cx = scopeNotes.reduce((a, n) => a + n.x, 0) / scopeNotes.length
