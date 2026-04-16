@@ -49,23 +49,29 @@
   --color-ring: var(--ring);
 }
 
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
 @layer base {
   * {
     border-color: var(--border);
   }
   body {
-    background: var(--background);
+    background-color: var(--background);
     color: var(--foreground);
   }
 }
 
-/* ── Scroll + iPad lock ───────────────────────────────────────────────────── */
+/* ── Viewport lock ──────────────────────────────────────────────────────────
+   Lock html + body to the actual visible area reported by visualViewport
+   (set as --app-height in layout.tsx). Falls back to 100dvh on browsers
+   without visualViewport. overflow:hidden prevents the page itself from
+   scrolling, which is what lets the Safari URL bar overlay content. */
 
 html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
   width: 100%;
+  height: var(--app-height, 100dvh);
   overflow: hidden;
   overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;

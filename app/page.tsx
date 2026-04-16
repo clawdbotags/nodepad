@@ -1063,7 +1063,7 @@ export default function Page() {
   }, [blocks])
 
   return (
-    <div className="relative flex h-full w-full overflow-hidden bg-[#020202] text-foreground">
+    <div className="relative flex w-full overflow-hidden bg-[#020202] text-foreground" style={{ height: "var(--app-height, 100dvh)" }}>
       {/* Left Sidebar */}
       <aside
         style={{ width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }}
@@ -1193,7 +1193,7 @@ export default function Page() {
       )}
 
       {/* Main canvas area */}
-      <main className="relative flex-1 overflow-hidden">
+      <main className="relative flex-1 h-full overflow-hidden">
         {/* View toggle */}
         <div className="absolute left-12 bottom-20 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
           {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
