@@ -10,6 +10,7 @@ import {
   renderSceneToPng,
   type ExcalidrawScene,
 } from "@/components/excalidraw-overlay"
+import { AILogPanel } from "@/components/ai-log-panel"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -613,6 +614,9 @@ export default function Page() {
 
   // Sidebar collapse
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  // AI call/response debug log (right-side panel)
+  const [aiLogOpen, setAiLogOpen] = useState(false)
 
   // Custom confirm dialog
   const [confirmState, setConfirmState] = useState<{
@@ -2600,6 +2604,21 @@ export default function Page() {
             onClose={() => setDrawingOverlayId(null)}
           />
         )}
+
+        {/* AI call/response debug log — right-side panel */}
+        <AILogPanel open={aiLogOpen} onClose={() => setAiLogOpen(false)} />
+        {/* Floating toggle pinned to right edge so it's always reachable */}
+        <button
+          data-testid="ai-log-toggle"
+          onClick={() => setAiLogOpen(o => !o)}
+          className={`fixed top-1/2 -translate-y-1/2 z-40 px-1.5 py-3 rounded-l-sm border border-r-0 border-white/10 bg-card/90 backdrop-blur-md font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-all ${
+            aiLogOpen ? "right-[440px]" : "right-0"
+          }`}
+          style={{ writingMode: "vertical-rl" }}
+          title={aiLogOpen ? "Close AI log" : "Open AI log"}
+        >
+          AI Log
+        </button>
       </main>
     </div>
   )

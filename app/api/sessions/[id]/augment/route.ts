@@ -11,6 +11,87 @@ import {
   getSettings,
 } from "@/lib/server/db"
 import { decrypt, isSensitiveKey } from "@/lib/server/crypto"
+import { recordCall } from "@/lib/server/ai-log"
+
+// Stringify a fetch body's `messages` array into a flat preview string so the
+// AI-log panel can show what was actually sent. Image data URLs are stripped
+// to size markers by recordCall itself.
+/**
+ * Wrap an OpenAI-compatible chat/completions fetch with AI-log capture.
+ * Records the system prompt, user content (image-stripped), response, latency,
+ * and error if any. Returns the parsed response body (re-fetched the raw text
+ * once so we can both log it and parse it).
+ */
+async function fetchAndLog(
+  label: string,
+  url: string,
+  body: any,
+  apiKey: string
+): Promise<{ ok: boolean; status: number; data: any; text: string }> {
+  const messages: any[] = Array.isArray(body?.messages) ? body.messages : []
+  const systemMsg = messages.find(m => m.role === "system")
+  const otherMsgs = messages.filter(m => m.role !== "system")
+  const t0 = Date.now()
+  let status = 0
+  let respText = ""
+  let respData: any = null
+  let assistantContent = ""
+  let errorMsg: string | undefined
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://nodepad.local",
+        "X-Title": "nodepad-v2",
+      },
+      body: JSON.stringify(body),
+    })
+    status = res.status
+    respText = await res.text()
+    if (respText) {
+      try { respData = JSON.parse(respText) } catch { /* upstream returned non-JSON */ }
+    }
+    if (!res.ok) {
+      errorMsg = `HTTP ${status}: ${respText.slice(0, 300)}`
+    }
+    assistantContent = respData?.choices?.[0]?.message?.content || ""
+  } catch (e: any) {
+    errorMsg = e?.message || String(e)
+  }
+
+  recordCall({
+    label,
+    model: String(body?.model || "unknown"),
+    system_prompt: typeof systemMsg?.content === "string" ? systemMsg.content : JSON.stringify(systemMsg?.content || ""),
+    user_content: previewMessages(otherMsgs),
+    response_text: assistantContent || respText,
+    response_status: status,
+    latency_ms: Date.now() - t0,
+    error: errorMsg,
+  })
+
+  return { ok: status >= 200 && status < 300, status, data: respData, text: respText }
+}
+
+function previewMessages(messages: Array<{ role: string; content: any }>): string {
+  return messages
+    .map(m => {
+      if (typeof m.content === "string") return `[${m.role}]\n${m.content}`
+      if (Array.isArray(m.content)) {
+        const parts = m.content.map((p: any) => {
+          if (p.type === "text") return p.text
+          if (p.type === "image_url") return `[image_url: ${p.image_url?.url || ""}]`
+          return JSON.stringify(p).slice(0, 200)
+        })
+        return `[${m.role}]\n${parts.join("\n---\n")}`
+      }
+      return `[${m.role}]\n${JSON.stringify(m.content).slice(0, 1000)}`
+    })
+    .join("\n\n========\n\n")
+}
 
 const REARRANGE_DEFAULT_MODEL = "google/gemini-3-flash"
 
@@ -117,29 +198,19 @@ Return ONLY valid JSON. No markdown fences, no prose, no commentary. The exact s
   }
   const useMultimodal = userContent.length > 1
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://nodepad.local",
-      "X-Title": "nodepad-v2",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: useMultimodal ? userContent : userPrompt },
-      ],
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-    }),
-  })
+  const res = await fetchAndLog("augment.structured", `${baseUrl}/chat/completions`, {
+    model: modelId,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: useMultimodal ? userContent : userPrompt },
+    ],
+    temperature: 0.3,
+    response_format: { type: "json_object" },
+  }, apiKey)
   if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`LLM call failed (${res.status}): ${text.slice(0, 300)}`)
+    throw new Error(`LLM call failed (${res.status}): ${res.text.slice(0, 300)}`)
   }
-  const data = await res.json()
+  const data = res.data
   const content = data?.choices?.[0]?.message?.content
   if (typeof content !== "string") throw new Error("LLM returned no content")
 
@@ -283,42 +354,32 @@ ${JSON.stringify(blocksInFrame, null, 2)}
 Existing within-scope connections:
 ${JSON.stringify(existingConns, null, 2)}`
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://nodepad.local",
-      "X-Title": "nodepad-v2",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: userText },
-            { type: "image_url", image_url: { url: imageDataUrl } },
-          ],
-        },
-      ],
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-    }),
-  })
+  const res = await fetchAndLog("augment.rearrange", `${baseUrl}/chat/completions`, {
+    model: modelId,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userText },
+          { type: "image_url", image_url: { url: imageDataUrl } },
+        ],
+      },
+    ],
+    temperature: 0.2,
+    response_format: { type: "json_object" },
+  }, apiKey)
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "")
     // Detect the common "model doesn't accept images" failure shape and rewrite.
-    if (/image|multimodal|vision|content type/i.test(text)) {
+    if (/image|multimodal|vision|content type/i.test(res.text)) {
       throw new Error(
         `Model "${modelId}" doesn't accept images. Switch to a vision-capable model (e.g. ${REARRANGE_DEFAULT_MODEL}) in settings.`
       )
     }
-    throw new Error(`LLM call failed (${res.status}): ${text.slice(0, 300)}`)
+    throw new Error(`LLM call failed (${res.status}): ${res.text.slice(0, 300)}`)
   }
-  const data = await res.json()
+  const data = res.data
   const content = data?.choices?.[0]?.message?.content
   if (typeof content !== "string") throw new Error("LLM returned no content")
 
@@ -396,15 +457,25 @@ You will receive:
 
 ## What to do
 
-- LOOK AT THE PROPOSED IMAGE. Compare it to what the user asked for.
-- If the proposed layout already satisfies the instruction well, return
-  { "moves": [] } — do not move things just to move them. The first pass
-  was likely good; minor imperfections are fine.
-- If the proposed layout is wrong (e.g. degenerated into a grid when the user
-  asked for a tree, blocks crammed into one quadrant when they should fill
-  the frame, text blocks not mirroring an in-scope diagram's structure),
-  output corrected positions — but ONLY for the blocks that need to move.
-  Omit any block that's already in the right place.
+- LOOK AT THE PROPOSED IMAGE. Be critical. The first pass was BLIND — it
+  output coordinates without ever seeing the rendered DOM, including text
+  wrap, drawings, and connection lines. Most first-pass results need at
+  least some refinement. Default to refining unless it is genuinely good.
+- Specifically critique:
+  * Did blocks land where the user actually wants them given the
+    instruction? (Read the instruction literally.)
+  * Is there a clear visual hierarchy / branching / shape, or did it
+    collapse into rows and columns?
+  * If a drawing/diagram is in scope, do the text blocks visually mirror
+    its structure (branches, hubs, vertical bands) or are they just stuck
+    in a grid below it?
+  * Are blocks using the full 0–1000 frame in BOTH dimensions, or
+    clustered in one quadrant?
+- If everything is GENUINELY perfect, return { "moves": [] } — but do not
+  return [] just to be polite. Only return [] when the proposed image
+  actually shows the layout the instruction asked for.
+- Output corrected positions for every block that should move. Omit any
+  block that is already in the right place.
 
 ## Common failure modes to watch for
 
@@ -436,37 +507,27 @@ ${JSON.stringify(proposedBlocksInFrame, null, 2)}
 Image 1 (ORIGINAL): the canvas before any rearrange.
 Image 2 (PROPOSED): the canvas after the first rearrange pass — this is what the user will see if you return an empty moves array. Refine only if it doesn't match the instruction.`
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://nodepad.local",
-      "X-Title": "nodepad-v2",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: userText },
-            { type: "image_url", image_url: { url: originalImageDataUrl } },
-            { type: "image_url", image_url: { url: proposedImageDataUrl } },
-          ],
-        },
-      ],
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-    }),
-  })
+  const res = await fetchAndLog("augment.rearrange-refine", `${baseUrl}/chat/completions`, {
+    model: modelId,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userText },
+          { type: "image_url", image_url: { url: originalImageDataUrl } },
+          { type: "image_url", image_url: { url: proposedImageDataUrl } },
+        ],
+      },
+    ],
+    temperature: 0.2,
+    response_format: { type: "json_object" },
+  }, apiKey)
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`Refine LLM call failed (${res.status}): ${text.slice(0, 300)}`)
+    throw new Error(`Refine LLM call failed (${res.status}): ${res.text.slice(0, 300)}`)
   }
-  const data = await res.json()
+  const data = res.data
   const content = data?.choices?.[0]?.message?.content
   if (typeof content !== "string") throw new Error("Refine LLM returned no content")
 
@@ -525,29 +586,19 @@ Rules:
   }
   const useMultimodal = userContent.length > 1
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://nodepad.local",
-      "X-Title": "nodepad-v2",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: useMultimodal ? userContent : userPrompt },
-      ],
-      temperature: 0.4,
-    }),
-  })
+  const res = await fetchAndLog("augment.default", `${baseUrl}/chat/completions`, {
+    model: modelId,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: useMultimodal ? userContent : userPrompt },
+    ],
+    temperature: 0.4,
+  }, apiKey)
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`LLM call failed (${res.status}): ${text.slice(0, 300)}`)
+    throw new Error(`LLM call failed (${res.status}): ${res.text.slice(0, 300)}`)
   }
-  const data = await res.json()
+  const data = res.data
   const content = data?.choices?.[0]?.message?.content
   if (typeof content !== "string") throw new Error("LLM returned no content")
   return content.trim()
