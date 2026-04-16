@@ -171,7 +171,11 @@ async function snapshotCanvasFull(
  * Push-apart any overlapping rects in O(n²) per iteration. Pure function:
  * returns a new map of rect.id -> { x, y }. Mutates `out` internally for speed.
  */
-function resolveCollisions(rects: BlockRect[], maxIters = 8): Record<string, { x: number; y: number }> {
+function resolveCollisions(rects: BlockRect[], maxIters = 24): Record<string, { x: number; y: number }> {
+  // PAD adds slack to each push so cascading pairs converge faster and small
+  // fractional residue (e.g. h=152.5) can't leave a 1–4 px visible overlap
+  // after final rounding.
+  const PAD = 6
   const out = rects.map(r => ({ ...r }))
   for (let iter = 0; iter < maxIters; iter++) {
     let any = false
@@ -184,10 +188,10 @@ function resolveCollisions(rects: BlockRect[], maxIters = 8): Record<string, { x
           any = true
           // Push along shorter axis
           if (overlapX < overlapY) {
-            const push = overlapX / 2 + 1
+            const push = overlapX / 2 + PAD
             if (a.x < b.x) { a.x -= push; b.x += push } else { a.x += push; b.x -= push }
           } else {
-            const push = overlapY / 2 + 1
+            const push = overlapY / 2 + PAD
             if (a.y < b.y) { a.y -= push; b.y += push } else { a.y += push; b.y -= push }
           }
         }
@@ -1221,9 +1225,22 @@ export default function Page() {
         }
         // Build proposed rect set: moved blocks at new pos, others at current pos.
         // Only in-scope blocks get pushed around — out-of-scope blocks keep their pos.
+        // CRITICAL: measure REAL rendered heights from DOM, because DB stores
+        // height=0 for auto-sized blocks and a long wrapping-text block can be
+        // 120–200 px tall — using a default 60 lets blocks visibly overlap.
+        const scale = viewport.scale || 1
+        const measureHeight = (id: string, fallback: number): number => {
+          const el = document.querySelector(`[data-block-id="${id}"]`) as HTMLElement | null
+          if (!el) return fallback
+          const r = el.getBoundingClientRect()
+          // r is in screen pixels (post-scale). Convert back to canvas coords.
+          const h = r.height / scale
+          return h > 0 ? h : fallback
+        }
         const proposed: BlockRect[] = inScope.map(b => {
           const w = b.width ?? 180
-          const h = b.height && b.height > 0 ? b.height : 60
+          const dbH = b.height && b.height > 0 ? b.height : 0
+          const h = dbH || measureHeight(b.id, 60)
           const target = movesById[b.id]
           return {
             id: b.id,
@@ -1252,10 +1269,14 @@ export default function Page() {
         setBlocks(data.notes || [])
         setConnections(data.connections || [])
 
-        // Server already applied connection diff atomically; collect ids for undo.
-        const addedConnIds: string[] = (res.added_connections || []).map((c: any) => c.id)
+        // Server already applied connection diff atomically; pull the undo info
+        // from `res.snapshot` (server-authoritative shape).
+        const snap = res.snapshot || {}
+        const addedConnIds: string[] = Array.isArray(snap.added_connection_ids)
+          ? snap.added_connection_ids
+          : []
         const removedConns: { id: string; from_block_id: string; to_block_id: string; label?: string }[] =
-          (res.removed_connections || []).map((c: any) => ({
+          (snap.removed_connections || []).map((c: any) => ({
             id: c.id,
             from_block_id: c.from_block_id,
             to_block_id: c.to_block_id,

@@ -397,14 +397,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       const priorPositions = scopeNotes.map(n => ({ id: n.id, x: n.x, y: n.y }))
       const removedConnObjs = allConns.filter(c => result.removed_connection_ids.includes(c.id))
 
-      // Apply within a single transaction
+      // CRITICAL: do NOT write the LLM's positions to DB here. They're in the
+      // client's 0–1000 normalized frame; the client converts back to canvas
+      // pixels, runs the collision resolver, and PATCHes positions itself.
+      // Only the connection diff is applied server-side.
       const db = getDb()
       const addedConnIds: string[] = []
       const newConnRecords: { id: string; from_id: string; to_id: string }[] = []
       const tx = db.transaction(() => {
-        for (const m of result.moves) {
-          updateNote(m.block_id, { x: m.x, y: m.y })
-        }
         for (const id of result.removed_connection_ids) {
           deleteConnection(id)
         }
@@ -424,15 +424,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       })
       tx()
 
-      // Pull back the moved notes so the client has the canonical post-write state
-      const movedNotes = result.moves.map(m => {
-        const n = listNotes(sessionId).find(x => x.id === m.block_id)
-        return n ? { id: n.id, x: n.x, y: n.y } : null
-      }).filter(Boolean)
-
       return NextResponse.json({
         mode: "rearrange",
-        moved: movedNotes,
+        // Moves are returned in the same 0–1000 frame the client sent; client
+        // converts them back to canvas pixels.
+        moves: result.moves,
         new_connections: newConnRecords,
         removed_connection_ids: result.removed_connection_ids,
         snapshot: {
