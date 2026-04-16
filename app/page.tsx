@@ -11,6 +11,7 @@ import {
   type ExcalidrawScene,
 } from "@/components/excalidraw-overlay"
 import { AILogPanel } from "@/components/ai-log-panel"
+import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -609,11 +610,48 @@ export default function Page() {
     moved: boolean
   }>({ active: false, startClientX: 0, startClientY: 0, startTx: 0, startTy: 0, moved: false })
 
-  // View mode
-  const [viewMode, setViewMode] = useState<ViewMode>("canvas")
+  // Mobile detection — drives view defaults and sidebar drawer behavior.
+  // The canvas view (drag/pan/zoom with multi-touch + small targets) doesn't
+  // work well on phone-sized screens; we default mobile users into Tiled.
+  const [isMobile, setIsMobile] = useState(false)
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const mq = window.matchMedia("(max-width: 767px)")
+    const update = () => setIsMobile(mq.matches)
+    update()
+    mq.addEventListener("change", update)
+    return () => mq.removeEventListener("change", update)
+  }, [])
 
-  // Sidebar collapse
+  // View mode — defaults to tiled on mobile (canvas needs precise pan/zoom).
+  const [viewMode, setViewMode] = useState<ViewMode>("canvas")
+  const didMobileInitRef = useRef(false)
+  useEffect(() => {
+    if (didMobileInitRef.current) return
+    if (isMobile) {
+      setViewMode("tiled")
+      didMobileInitRef.current = true
+    }
+  }, [isMobile])
+
+  // If a user is on mobile and somehow lands on canvas, bounce them to tiled.
+  // (e.g. they switched device size mid-session). Only auto-correct once.
+  useEffect(() => {
+    if (isMobile && viewMode === "canvas") {
+      setViewMode("tiled")
+    }
+  }, [isMobile, viewMode])
+
+  // Sidebar collapse — closed by default on mobile (becomes a drawer overlay).
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const didMobileSidebarInitRef = useRef(false)
+  useEffect(() => {
+    if (didMobileSidebarInitRef.current) return
+    if (isMobile) {
+      setSidebarOpen(false)
+      didMobileSidebarInitRef.current = true
+    }
+  }, [isMobile])
 
   // AI call/response debug log (right-side panel)
   const [aiLogOpen, setAiLogOpen] = useState(false)
@@ -749,110 +787,32 @@ export default function Page() {
   // the Matrix transcription Hand uses). The transcript is appended to the
   // input field — user reviews + hits Enter / Submit to actually create the
   // block, so we never auto-submit unverified speech.
-  const [recording, setRecording] = useState(false)
-  const [transcribing, setTranscribing] = useState(false)
-  const recorderRef = useRef<MediaRecorder | null>(null)
-  const recorderChunksRef = useRef<Blob[]>([])
-  const recorderStreamRef = useRef<MediaStream | null>(null)
+  // Entry-bar voice recorder — appends transcript to the new-block input.
+  const entryVoice = useVoiceRecorder({
+    onTranscript: text => {
+      setInputText(prev => {
+        const sep = prev && !prev.endsWith(" ") ? " " : ""
+        return prev + sep + text
+      })
+      canvasInputRef.current?.focus()
+    },
+    onError: showToast,
+  })
+  const recording = entryVoice.recording
+  const transcribing = entryVoice.transcribing
+  const toggleRecording = entryVoice.toggle
 
-  const stopRecording = useCallback(() => {
-    const r = recorderRef.current
-    if (r && r.state !== "inactive") {
-      r.stop()
-    }
-  }, [])
-
-  const startRecording = useCallback(async () => {
-    if (recording || transcribing) return
-    if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      // The single most common cause is "not a secure context" — browsers
-      // gate getUserMedia to https:// or localhost. Tell the user that
-      // explicitly so they don't think the feature is broken.
-      const insecure = typeof window !== "undefined" && !window.isSecureContext
-      showToast(insecure
-        ? "Voice needs HTTPS — open the https:// URL"
-        : "Voice input not supported in this browser")
-      return
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      recorderStreamRef.current = stream
-      // Pick the best mime type the browser actually supports. Chrome/Firefox
-      // → audio/webm;opus, Safari → audio/mp4. Both are accepted by
-      // faster-whisper-server (ffmpeg under the hood).
-      const candidates = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/mp4",
-        "audio/ogg;codecs=opus",
-      ]
-      let mime = ""
-      for (const c of candidates) {
-        if ((window as any).MediaRecorder?.isTypeSupported?.(c)) { mime = c; break }
-      }
-      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
-      recorderChunksRef.current = []
-      rec.ondataavailable = e => {
-        if (e.data && e.data.size > 0) recorderChunksRef.current.push(e.data)
-      }
-      rec.onstop = async () => {
-        // Always release the mic immediately after stop — otherwise the
-        // browser keeps the red "in use" indicator on for the rest of the
-        // session, which is creepy.
-        const s = recorderStreamRef.current
-        if (s) { for (const t of s.getTracks()) t.stop(); recorderStreamRef.current = null }
-        recorderRef.current = null
-        setRecording(false)
-
-        const chunks = recorderChunksRef.current
-        recorderChunksRef.current = []
-        if (chunks.length === 0) return
-        const blob = new Blob(chunks, { type: chunks[0].type || mime || "audio/webm" })
-        if (blob.size < 800) {
-          showToast("Recording too short")
-          return
-        }
-        setTranscribing(true)
-        try {
-          const fd = new FormData()
-          fd.append("audio", blob, `voice.${(blob.type.split("/")[1] || "webm").split(";")[0]}`)
-          const res = await fetch("/api/transcribe", { method: "POST", body: fd })
-          const data = await res.json().catch(() => ({}))
-          if (!res.ok) throw new Error(data?.error || `transcribe ${res.status}`)
-          const text = String(data?.text || "").trim()
-          if (!text) {
-            showToast("Nothing transcribed")
-            return
-          }
-          // Append rather than replace, so the user can dictate additions to
-          // text they've already typed.
-          setInputText(prev => {
-            const sep = prev && !prev.endsWith(" ") ? " " : ""
-            return prev + sep + text
-          })
-          // Refocus the input so they can immediately Enter/edit.
-          canvasInputRef.current?.focus()
-        } catch (e: any) {
-          showToast(`Transcribe error: ${e.message}`)
-        } finally {
-          setTranscribing(false)
-        }
-      }
-      recorderRef.current = rec
-      rec.start()
-      setRecording(true)
-    } catch (e: any) {
-      showToast(`Mic error: ${e.message}`)
-      setRecording(false)
-      const s = recorderStreamRef.current
-      if (s) { for (const t of s.getTracks()) t.stop(); recorderStreamRef.current = null }
-    }
-  }, [recording, transcribing, showToast])
-
-  const toggleRecording = useCallback(() => {
-    if (recording) stopRecording()
-    else startRecording()
-  }, [recording, startRecording, stopRecording])
+  // Augment-dialog voice recorder — appends transcript to the augment prompt.
+  const augmentVoice = useVoiceRecorder({
+    onTranscript: text => {
+      setAugmentPrompt(prev => {
+        const sep = prev && !prev.endsWith(" ") ? " " : ""
+        return prev + sep + text
+      })
+      augmentInputRef.current?.focus()
+    },
+    onError: showToast,
+  })
 
   // ── Delete selected blocks (with in-app confirm) ─────────────────────────
   const performDeleteSelected = useCallback(async () => {
@@ -1840,10 +1800,24 @@ export default function Page() {
 
   return (
     <div className="relative flex w-full overflow-hidden bg-[#020202] text-foreground" style={{ height: "var(--app-height, 100dvh)" }}>
-      {/* Left Sidebar */}
+      {/* Mobile sidebar backdrop — taps outside the drawer close it */}
+      {isMobile && sidebarOpen && (
+        <div
+          data-testid="sidebar-backdrop"
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+        />
+      )}
+      {/* Left Sidebar — fixed overlay drawer on mobile, inline on desktop */}
       <aside
-        style={{ width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }}
-        className="relative z-50 transition-all duration-200 ease-in-out overflow-hidden border-r border-border bg-black/20 backdrop-blur-3xl flex flex-col h-full"
+        style={
+          isMobile
+            ? { width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }
+            : { width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }
+        }
+        className={`${
+          isMobile ? "fixed inset-y-0 left-0" : "relative"
+        } z-50 transition-all duration-200 ease-in-out overflow-hidden border-r border-border bg-black/95 md:bg-black/20 backdrop-blur-3xl flex flex-col h-full`}
       >
         <div className="w-[240px] flex flex-col h-full">
           {/* Sidebar Header */}
@@ -1984,13 +1958,14 @@ export default function Page() {
       <main className="relative flex-1 h-full overflow-hidden flex flex-col min-h-0">
         {/* Content area (views + their overlays) */}
         <div className="relative flex-1 min-h-0 overflow-hidden">
-        {/* View toggle */}
+        {/* View toggle — drops Canvas on mobile (drag/pan/zoom is unusable on
+            phones; mobile users get tiled + graph only). */}
         <div className="absolute left-3 bottom-3 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
-          {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
+          {(isMobile ? (["tiled", "graph"] as ViewMode[]) : (["canvas", "tiled", "graph"] as ViewMode[])).map(m => (
             <button
               key={m}
               onClick={() => setViewMode(m)}
-              className={`rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-all ${
+              className={`rounded-sm px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider transition-all ${
                 viewMode === m
                   ? "bg-primary/12 border border-primary/35 text-primary shadow-[0_0_0_1px_var(--primary)]"
                   : "text-white/55 hover:bg-white/[0.06] hover:text-white/80 border border-transparent"
@@ -2359,8 +2334,8 @@ export default function Page() {
 
         {/* Augment prompt */}
         {augmentOpen && (
-          <div className="absolute inset-x-0 bottom-4 z-40 flex justify-center">
-            <div className="flex w-[600px] max-w-[90%] flex-col gap-3 rounded-sm border border-white/10 bg-black/85 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
+          <div className="absolute inset-x-0 bottom-4 z-40 flex justify-center px-2">
+            <div className="flex w-[600px] max-w-full flex-col gap-3 rounded-sm border border-white/10 bg-black/85 backdrop-blur-3xl p-4 shadow-[0_-24px_60px_-12px_rgba(0,0,0,0.6)]">
               <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-white/45">
                 {(() => {
                   const verb = augmentRearrange ? "Rearrange" : "Augment"
@@ -2369,25 +2344,56 @@ export default function Page() {
                     : `${verb} whole canvas · ${blocks.length} block${blocks.length === 1 ? "" : "s"}`
                 })()}
               </div>
-              <input
-                ref={augmentInputRef}
-                data-testid="augment-input"
-                value={augmentPrompt}
-                onChange={e => setAugmentPrompt(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault()
-                    submitAugment()
-                  }
-                }}
-                disabled={augmentBusy}
-                placeholder={augmentRearrange
-                  ? "How should the layout change? (e.g. spread as a left-to-right timeline)"
-                  : augmentStructured
-                  ? "Describe the structure (e.g. concept map with causal arrows)"
-                  : "Instruction (e.g. reformat as checklist)"}
-                className="rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-primary/50 transition-colors"
-              />
+              <div className="flex items-stretch gap-2">
+                <input
+                  ref={augmentInputRef}
+                  data-testid="augment-input"
+                  value={augmentPrompt}
+                  onChange={e => setAugmentPrompt(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault()
+                      submitAugment()
+                    }
+                  }}
+                  disabled={augmentBusy || augmentVoice.transcribing}
+                  placeholder={augmentRearrange
+                    ? "How should the layout change? (e.g. spread as a left-to-right timeline)"
+                    : augmentStructured
+                    ? "Describe the structure (e.g. concept map with causal arrows)"
+                    : "Instruction (e.g. reformat as checklist)"}
+                  className="flex-1 min-w-0 rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-primary/50 transition-colors"
+                />
+                <button
+                  type="button"
+                  data-testid="augment-voice-btn"
+                  onClick={augmentVoice.toggle}
+                  disabled={augmentBusy || augmentVoice.transcribing}
+                  aria-pressed={augmentVoice.recording}
+                  aria-label={augmentVoice.recording ? "Stop recording" : "Dictate prompt"}
+                  title={augmentVoice.recording ? "Stop & transcribe" : "Dictate prompt"}
+                  className={`relative shrink-0 inline-flex items-center justify-center rounded-sm border px-3 transition-colors disabled:opacity-40 ${
+                    augmentVoice.recording
+                      ? "border-red-500/40 bg-red-500/10 text-red-300"
+                      : augmentVoice.transcribing
+                      ? "border-primary/40 bg-primary/10 text-primary animate-pulse"
+                      : "border-white/10 bg-white/[0.04] text-white/55 hover:bg-white/[0.08] hover:text-white/80"
+                  }`}
+                >
+                  {augmentVoice.recording ? (
+                    <span className="relative flex h-3 w-3">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                      <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500" />
+                    </span>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="9" y="3" width="6" height="12" rx="3" />
+                      <path d="M5 11a7 7 0 0 0 14 0" />
+                      <line x1="12" y1="18" x2="12" y2="22" />
+                    </svg>
+                  )}
+                </button>
+              </div>
               <label className="flex items-center gap-2 font-mono text-[10px] text-white/55 cursor-pointer select-none">
                 <input
                   type="checkbox"

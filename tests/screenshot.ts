@@ -1,39 +1,69 @@
-import { chromium } from 'playwright'
+import { chromium, devices } from 'playwright'
 
 async function main() {
   const browser = await chromium.launch()
+  const iPad = devices['iPad Pro 11']
 
-  // iPad Air viewport
+  // Test with iPad viewport
   const context = await browser.newContext({
-    viewport: { width: 1180, height: 820 },
-    deviceScaleFactor: 2,
-    isMobile: true,
-    hasTouch: true,
-    userAgent: 'Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+    ...iPad,
   })
 
   const page = await context.newPage()
   await page.goto('http://127.0.0.1:3034', { waitUntil: 'networkidle' })
   await page.waitForTimeout(2000)
 
-  // Screenshot the full page
+  // Screenshot
   await page.screenshot({ path: '/tmp/nodepad-ipad.png', fullPage: false })
-  console.log('Screenshot saved to /tmp/nodepad-ipad.png')
+  console.log('Screenshot: /tmp/nodepad-ipad.png')
 
-  // Also check what's visible at the very top
-  const top = await page.evaluate(() => {
-    const el = document.querySelector('main')
-    if (!el) return 'no main'
-    const rect = el.getBoundingClientRect()
-    return `main: top=${rect.top} left=${rect.left} width=${rect.width} height=${rect.height}`
+  // Check root element dimensions
+  const rootInfo = await page.evaluate(() => {
+    const root = document.querySelector('body > div')
+    if (!root) return 'no root div found'
+    const rect = root.getBoundingClientRect()
+    const style = getComputedStyle(root)
+    return `root: top=${rect.top} height=${rect.height} style.height=${style.height} window.innerHeight=${window.innerHeight}`
   })
-  console.log(top)
+  console.log(rootInfo)
 
-  const bodyInfo = await page.evaluate(() => {
-    const b = document.body
-    return `body: h=${b.clientHeight} scrollH=${b.scrollHeight} paddingTop=${getComputedStyle(b).paddingTop}`
+  // Check if sidebar header is visible (should be near top=0)
+  const sidebarInfo = await page.evaluate(() => {
+    // Look for the NODEPAD text
+    const els = Array.from(document.querySelectorAll('h2'))
+    const nodepadEl = els.find(e => e.textContent?.includes('nodepad'))
+    if (!nodepadEl) return 'NODEPAD header not found'
+    const rect = nodepadEl.getBoundingClientRect()
+    return `NODEPAD header: top=${rect.top} bottom=${rect.bottom} visible=${rect.top >= 0 && rect.bottom <= window.innerHeight}`
   })
-  console.log(bodyInfo)
+  console.log(sidebarInfo)
+
+  // Check view toggle position
+  const viewToggle = await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('button'))
+    const canvasBtn = btns.find(b => b.textContent?.trim().toLowerCase() === 'canvas')
+    if (!canvasBtn) return 'Canvas button not found'
+    const rect = canvasBtn.getBoundingClientRect()
+    return `Canvas btn: top=${rect.top} bottom=${rect.bottom} visible=${rect.top >= 0 && rect.bottom <= window.innerHeight}`
+  })
+  console.log(viewToggle)
+
+  // Check bottom input
+  const inputInfo = await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="canvas-input"]') as HTMLElement
+    if (!input) return 'Canvas input not found'
+    const rect = input.getBoundingClientRect()
+    return `Input: top=${rect.top} bottom=${rect.bottom} visible=${rect.bottom <= window.innerHeight}`
+  })
+  console.log(inputInfo)
+
+  // Check if anything overflows
+  const overflowInfo = await page.evaluate(() => {
+    const body = document.body
+    const html = document.documentElement
+    return `body: scrollH=${body.scrollHeight} clientH=${body.clientHeight} | html: scrollH=${html.scrollHeight} clientH=${html.clientHeight} | innerH=${window.innerHeight}`
+  })
+  console.log(overflowInfo)
 
   await browser.close()
 }
