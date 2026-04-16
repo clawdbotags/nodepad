@@ -1472,9 +1472,81 @@ export default function Page() {
             w, h,
           }
         })
-        const resolved = resolveCollisions(proposed)
+        let resolved = resolveCollisions(proposed)
 
-        // Apply: PATCH every block whose final pos differs by > 1px from its prior DB pos
+        // ── Two-pass refinement: project the proposed layout visually back to
+        // the LLM and let it correct itself. The first pass is "blind" — it
+        // emits coordinates without seeing the rendered result. The second
+        // pass shows the actual rendered DOM (post-resolver, post-text-wrap,
+        // including any in-scope drawings) so the model can fix gridded /
+        // overlapping / off-template results.
+        try {
+          // 1. Apply proposed positions to LOCAL state only (no PATCH yet).
+          const previewBlocks = blocks.map(b => {
+            const np = resolved[b.id]
+            return np ? { ...b, x: np.x, y: np.y } : b
+          })
+          setBlocks(previewBlocks)
+          // 2. Wait for two paints — first to commit the React state, second
+          //    to ensure layout/text-wrap is fully measured before snapshot.
+          await new Promise<void>(r =>
+            requestAnimationFrame(() => requestAnimationFrame(() => r()))
+          )
+          // 3. Snapshot the proposed canvas using the same frame as before.
+          const proposed_image_data_url = await snapshotCanvas(wrapperEl, { min_x, min_y, max_x, max_y })
+          // 4. Build proposed_blocks_in_frame at the new positions.
+          const proposed_blocks_in_frame = inScope.map(b => {
+            const np = resolved[b.id] || { x: b.x, y: b.y }
+            const w = b.width ?? 180
+            const h = b.height && b.height > 0 ? b.height : measureHeight(b.id, 60)
+            return {
+              id: b.id,
+              text: b.text,
+              x: Math.round((np.x - min_x) * sx),
+              y: Math.round((np.y - min_y) * sy),
+              w: Math.round(w * sx),
+              h: Math.round(h * sy),
+            }
+          })
+          // 5. Call refine — gets back ONLY the moves that should change.
+          const refineRes = await api(`/api/sessions/${activeSessionId}/augment`, {
+            method: "POST",
+            body: JSON.stringify({
+              mode: "rearrange-refine",
+              prompt: augmentPrompt,
+              block_ids: scopeIds,
+              original_image_data_url: image_data_url,
+              proposed_image_data_url,
+              proposed_blocks_in_frame,
+            }),
+          })
+          const refineMoves = (refineRes.moves || []) as Array<{ block_id: string; x: number; y: number }>
+          if (refineMoves.length > 0) {
+            // Convert refine moves to content pixels and merge into the proposed rects
+            const refinedRects: BlockRect[] = inScope.map(b => {
+              const cur = resolved[b.id] || { x: b.x, y: b.y }
+              const m = refineMoves.find(rm => rm.block_id === b.id)
+              const w = b.width ?? 180
+              const h = b.height && b.height > 0 ? b.height : measureHeight(b.id, 60)
+              if (m) {
+                return {
+                  id: b.id,
+                  x: Math.round(min_x + m.x / sx),
+                  y: Math.round(min_y + m.y / sy),
+                  w, h,
+                }
+              }
+              return { id: b.id, x: cur.x, y: cur.y, w, h }
+            })
+            resolved = resolveCollisions(refinedRects)
+          }
+        } catch (refineErr) {
+          // Refinement is best-effort — if it fails, fall back to first-pass positions.
+          console.warn("rearrange refine failed; using first-pass positions:", refineErr)
+        }
+
+        // Apply: PATCH every block whose final pos differs by > 1px from its prior DB pos.
+        // Using the (possibly refined) `resolved` rects.
         const priorPositions = inScope.map(b => ({ id: b.id, x: b.x, y: b.y }))
         for (const b of inScope) {
           const np = resolved[b.id]

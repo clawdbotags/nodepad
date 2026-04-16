@@ -352,6 +352,143 @@ ${JSON.stringify(existingConns, null, 2)}`
   return { moves, new_connections: newConns, removed_connection_ids: removed }
 }
 
+// Refinement pass for rearrange. The LLM gets:
+//   1. Original canvas image (state before the first rearrange pass)
+//   2. Proposed canvas image (what the canvas WILL look like if we accept the
+//      first-pass positions — the client renders it client-side and ships it)
+//   3. The proposed positions of every in-scope block in the 0–1000 frame
+//   4. The user's original instruction
+// Output is the same `moves` shape as the first pass — only positions to change.
+// The model is instructed to return [] when the proposed layout already
+// satisfies the instruction (no thrash).
+async function callLLMRearrangeRefine(
+  prompt: string,
+  proposedBlocksInFrame: FrameBlock[],
+  originalImageDataUrl: string,
+  proposedImageDataUrl: string,
+  settings: Record<string, string>
+): Promise<{ moves: { block_id: string; x: number; y: number }[] }> {
+  const provider = settings.provider || "openrouter"
+  const apiKey = settings.apiKey || ""
+  const modelId = settings.rearrangeModelId || settings.modelId || REARRANGE_DEFAULT_MODEL
+  const baseUrl =
+    settings.customBaseUrl ||
+    (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
+  if (!apiKey) throw new Error("No API key configured.")
+
+  const allowedIds = new Set(proposedBlocksInFrame.map(b => b.id))
+
+  const systemPrompt = `You are doing a REFINEMENT pass on a spatial canvas layout.
+
+A previous pass already produced positions for the blocks. You are now seeing
+the actual rendered result of that pass. Your job is to look at the rendered
+output and decide whether it actually satisfies the user's instruction — and
+if not, make targeted corrections.
+
+You will receive:
+1. ORIGINAL image: what the canvas looked like BEFORE the first rearrange.
+2. PROPOSED image: what the canvas will look like if we accept the first-pass
+   positions as-is. This is the actual rendered DOM, including any drawing
+   blocks, connections, and text wrapping.
+3. JSON list of in-scope blocks at their PROPOSED positions in the 0–1000
+   frame (so you can refer to coordinates).
+4. The user's original instruction.
+
+## What to do
+
+- LOOK AT THE PROPOSED IMAGE. Compare it to what the user asked for.
+- If the proposed layout already satisfies the instruction well, return
+  { "moves": [] } — do not move things just to move them. The first pass
+  was likely good; minor imperfections are fine.
+- If the proposed layout is wrong (e.g. degenerated into a grid when the user
+  asked for a tree, blocks crammed into one quadrant when they should fill
+  the frame, text blocks not mirroring an in-scope diagram's structure),
+  output corrected positions — but ONLY for the blocks that need to move.
+  Omit any block that's already in the right place.
+
+## Common failure modes to watch for
+
+- 4-column or N-row uniform grid when the user asked for any other shape.
+- All blocks clustered into one quadrant (top-left, etc) instead of using
+  the full 0–1000 × 0–1000 frame.
+- Text blocks ignoring an in-scope diagram's branching/hierarchy and lined
+  up in alphabetical or arbitrary order instead.
+- Blocks visibly overlapping in the proposed image (the client's collision
+  resolver only handles tiny overlaps).
+- Blocks drifting off-frame (x or y near 0 or near 1000).
+
+## Constraints
+
+- Coordinates stay in [0, 1000].
+- Do not change block text, do not add or delete blocks, do not output sizes.
+- Only move blocks that need it. Empty moves array is a valid and preferred
+  output when the proposal is good enough.
+
+Return ONLY valid JSON in this exact shape:
+
+{ "moves": [{ "block_id": "abc123", "x": 240, "y": 600 }] }`
+
+  const userText = `Original instruction: ${prompt}
+
+Proposed in-scope blocks (in 0–1000 frame):
+${JSON.stringify(proposedBlocksInFrame, null, 2)}
+
+Image 1 (ORIGINAL): the canvas before any rearrange.
+Image 2 (PROPOSED): the canvas after the first rearrange pass — this is what the user will see if you return an empty moves array. Refine only if it doesn't match the instruction.`
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://nodepad.local",
+      "X-Title": "nodepad-v2",
+    },
+    body: JSON.stringify({
+      model: modelId,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: userText },
+            { type: "image_url", image_url: { url: originalImageDataUrl } },
+            { type: "image_url", image_url: { url: proposedImageDataUrl } },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    throw new Error(`Refine LLM call failed (${res.status}): ${text.slice(0, 300)}`)
+  }
+  const data = await res.json()
+  const content = data?.choices?.[0]?.message?.content
+  if (typeof content !== "string") throw new Error("Refine LLM returned no content")
+
+  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim()
+  let parsed: any
+  try { parsed = JSON.parse(cleaned) } catch (e: any) {
+    throw new Error(`Refine LLM returned invalid JSON: ${e.message}; got: ${cleaned.slice(0, 200)}`)
+  }
+
+  const clamp = (v: number) => Math.max(0, Math.min(1000, v))
+  const moves = Array.isArray(parsed.moves)
+    ? parsed.moves
+        .filter((m: any) =>
+          m && typeof m.block_id === "string" && allowedIds.has(m.block_id)
+          && typeof m.x === "number" && typeof m.y === "number"
+          && Number.isFinite(m.x) && Number.isFinite(m.y))
+        .map((m: any) => ({ block_id: m.block_id as string, x: clamp(m.x), y: clamp(m.y) }))
+    : []
+
+  return { moves }
+}
+
 async function callLLM(prompt: string, blocks: SourceBlock[], settings: Record<string, string>): Promise<string> {
   const provider = settings.provider || "openrouter"
   const apiKey = settings.apiKey || ""
@@ -425,9 +562,39 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const mode: string =
       body.mode === "structured" ? "structured"
       : body.mode === "rearrange" ? "rearrange"
+      : body.mode === "rearrange-refine" ? "rearrange-refine"
       : "default"
 
     if (!prompt.trim()) return NextResponse.json({ error: "prompt required" }, { status: 400 })
+
+    // Refine mode is stateless w.r.t. the DB — it just calls the LLM with two
+    // images and returns moves. No DB writes here; the client does the PATCH
+    // after both passes complete.
+    if (mode === "rearrange-refine") {
+      const originalImageDataUrl: string = body.original_image_data_url || ""
+      const proposedImageDataUrl: string = body.proposed_image_data_url || ""
+      const proposedBlocksInFrame: FrameBlock[] = Array.isArray(body.proposed_blocks_in_frame)
+        ? body.proposed_blocks_in_frame
+        : []
+      if (!originalImageDataUrl.startsWith("data:image/") || !proposedImageDataUrl.startsWith("data:image/")) {
+        return NextResponse.json({ error: "original_image_data_url and proposed_image_data_url required" }, { status: 400 })
+      }
+      if (proposedBlocksInFrame.length === 0) {
+        return NextResponse.json({ error: "proposed_blocks_in_frame required" }, { status: 400 })
+      }
+      if (originalImageDataUrl.length > 700_000 || proposedImageDataUrl.length > 700_000) {
+        return NextResponse.json({ error: "snapshot too large; zoom in or select a subset" }, { status: 413 })
+      }
+      const settings = loadSettings()
+      const result = await callLLMRearrangeRefine(
+        prompt,
+        proposedBlocksInFrame,
+        originalImageDataUrl,
+        proposedImageDataUrl,
+        settings
+      )
+      return NextResponse.json({ mode: "rearrange-refine", moves: result.moves })
+    }
 
     const allNotes = listNotes(sessionId)
     const allConns = listConnections(sessionId)
