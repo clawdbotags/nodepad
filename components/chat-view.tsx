@@ -8,6 +8,7 @@ import { ToolbarPill } from "@/components/ui/toolbar-pill"
 import { EntryBar, EntryBarIconCluster, EntryBarIconDivider } from "@/components/ui/entry-bar"
 import { VoiceMicButton } from "@/components/ui/voice-mic-button"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
+import { formatRelativeTime } from "@/lib/utils"
 
 /**
  * Matrix-backed chat view for nodepad. Shows rooms Albert's account has
@@ -47,15 +48,9 @@ type SyncResponse = {
   rooms: Room[]
 }
 
-function formatTime(ts: number): string {
-  if (!ts) return ""
-  const d = new Date(ts)
-  const now = Date.now()
-  const sameDay = new Date(now).toDateString() === d.toDateString()
-  if (sameDay) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
-  const sameYear = new Date(now).getFullYear() === d.getFullYear()
-  return d.toLocaleDateString([], sameYear ? { month: "short", day: "numeric" } : { year: "2-digit", month: "short", day: "numeric" })
-}
+// formatTime moved to lib/utils.ts (formatRelativeTime) so the nodes pane
+// can share the exact same rule.
+const formatTime = formatRelativeTime
 
 function senderDisplay(mxid: string): string {
   // @engineer:ubuntu-4gb-hel1-1 → engineer

@@ -112,10 +112,23 @@ export interface SessionRow {
   name: string
   created_at: number
   updated_at: number
+  block_count?: number
 }
 
 export function listSessions(): SessionRow[] {
-  return getDb().prepare("SELECT * FROM sessions ORDER BY updated_at DESC").all() as SessionRow[]
+  // LEFT JOIN + COUNT gives per-session block totals in one query so the
+  // sidebar list can show "N blocks" as a subtitle, matching the rooms
+  // pane's "sender · last message" density.
+  return getDb()
+    .prepare(
+      `SELECT s.id, s.name, s.created_at, s.updated_at,
+              COALESCE(COUNT(n.id), 0) AS block_count
+       FROM sessions s
+       LEFT JOIN notes n ON n.session_id = s.id
+       GROUP BY s.id
+       ORDER BY s.updated_at DESC`
+    )
+    .all() as SessionRow[]
 }
 
 export function createSession(id: string, name: string): SessionRow {

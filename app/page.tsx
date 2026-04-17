@@ -24,6 +24,7 @@ import { ChatView } from "@/components/chat-view"
 import { ChatDriveView } from "@/components/chat-drive-view"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
+import { formatRelativeTime } from "@/lib/utils"
 
 // 0.2 s of 8-bit PCM silence (8 kHz mono, 1644 bytes → 2192-char base64).
 // Looped while Drive Mode is open to keep an active MediaSession on Chrome
@@ -60,6 +61,7 @@ interface Session {
   name: string
   created_at: number
   updated_at: number
+  block_count?: number
 }
 
 // ── Undo snapshot shape ──────────────────────────────────────────────────────
@@ -2412,20 +2414,45 @@ export default function Page() {
             ]}
           />
 
-          {/* Session list */}
+          {/* Section header — mirrors the "ROOMS · @ags_phone" header in
+              chat-view.tsx so the nodes pane and the rooms pane share the
+              same visual rhythm: same border, same paddings, same type
+              scale, same uppercase tracking. Right slot is the canvas
+              count instead of a user tag. */}
+          <div className="shrink-0 border-b border-white/10 px-3 py-2 flex items-center gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/55">
+              Nodes
+            </span>
+            <span className="ml-auto text-[10px] text-white/40">
+              {sessions.length} {sessions.length === 1 ? "canvas" : "canvases"}
+            </span>
+          </div>
+
+          {/* Session list — same SidebarListItem as the rooms pane with
+              subtitle (block count) + meta (updated_at) so both lists have
+              the same 3-line item density. */}
           <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {sessions.map(s => (
-              <SidebarListItem
-                key={s.id}
-                testId={`session-item-${s.id}`}
-                deleteTestId={`session-delete-${s.id}`}
-                active={s.id === activeSessionId}
-                onClick={() => setActiveSessionId(s.id)}
-                onDelete={() => deleteSession(s.id)}
-                deleteLabel="Delete canvas"
-                label={s.name}
-              />
-            ))}
+            {sessions.map(s => {
+              const count = s.block_count ?? 0
+              return (
+                <SidebarListItem
+                  key={s.id}
+                  testId={`session-item-${s.id}`}
+                  deleteTestId={`session-delete-${s.id}`}
+                  active={s.id === activeSessionId}
+                  onClick={() => setActiveSessionId(s.id)}
+                  onDelete={() => deleteSession(s.id)}
+                  deleteLabel="Delete canvas"
+                  label={s.name}
+                  subtitle={
+                    <span className="text-white/55">
+                      {count} {count === 1 ? "block" : "blocks"}
+                    </span>
+                  }
+                  meta={formatRelativeTime(s.updated_at)}
+                />
+              )
+            })}
           </div>
 
           {/* Sidebar Footer */}
