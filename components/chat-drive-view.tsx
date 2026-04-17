@@ -236,7 +236,6 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
       if (!ttsAudioRef.current) {
         const a = new Audio()
         a.preload = "auto"
-        a.crossOrigin = "anonymous"
         ttsAudioRef.current = a
       }
       const audio = ttsAudioRef.current
@@ -245,6 +244,7 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
       audio.loop = false
       audio.volume = 1.0
       audio.src = blobUrl
+      try { audio.load() } catch {}
 
       const cleanup = () => {
         if (ttsBlobUrlRef.current === blobUrl) {
@@ -259,9 +259,20 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
         setAudioStatus("")
       }
       audio.onerror = () => {
+        const err = (audio as any).error as MediaError | null
+        const code = err?.code ?? 0
+        const msg = err?.message || ""
+        const codeName = [
+          "",
+          "ABORTED",
+          "NETWORK",
+          "DECODE",
+          "SRC_NOT_SUPPORTED",
+        ][code] || `CODE_${code}`
+        console.warn("[chat-drive] audio.onerror", { code, codeName, msg, src: audio.src.slice(0, 60) })
         cleanup()
         releaseSession()
-        setError("audio playback error")
+        setError(`audio ${codeName}${msg ? `: ${msg}` : ""} (bytes=${buf.byteLength})`)
         setPhase("ready")
         setAudioStatus("")
       }
@@ -351,6 +362,25 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
       setLastReplyPreview("")
       setAudioStatus("recording")
       await engageSession()
+      // Prime the TTS audio element during this user gesture so Android Chrome
+      // will allow .play() on src-change later (from a non-gesture callback).
+      // Without this, the play() call in onQuietFired throws NotAllowedError.
+      try {
+        if (!ttsAudioRef.current) {
+          const a = new Audio()
+          a.preload = "auto"
+          ttsAudioRef.current = a
+        }
+        const a = ttsAudioRef.current
+        a.loop = false
+        a.muted = false
+        a.volume = 1.0
+        if (!a.src) a.src = CHAT_DRIVE_SILENT_LOOP_SRC
+        await a.play().catch(() => {})
+        try { a.pause(); a.currentTime = 0 } catch {}
+      } catch (e: any) {
+        console.warn("[chat-drive] tts audio prime failed:", e?.message)
+      }
       setPhase("recording")
       setTimeout(() => { voiceRef.current?.start() }, 80)
       return
