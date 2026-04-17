@@ -5,6 +5,7 @@ import { TextField } from "@/components/ui/text-field"
 import { SidebarListItem } from "@/components/ui/sidebar-list-item"
 import { DriveButton } from "@/components/ui/drive-button"
 import { ToolbarPill } from "@/components/ui/toolbar-pill"
+import { EntryBar, EntryBarIconCluster } from "@/components/ui/entry-bar"
 
 /**
  * Matrix-backed chat view for nodepad. Shows rooms Albert's account has
@@ -379,16 +380,6 @@ export function ChatView({
                     <span className="text-[10px] text-white/40 truncate">{activeRoom.topic}</span>
                   )}
                 </div>
-                {onStartDrive && (
-                  <div className="ml-auto">
-                    <DriveButton
-                      testId="chat-drive-start"
-                      variant="pill"
-                      onClick={() => onStartDrive(activeRoom.id, activeRoom.name, me)}
-                      title="Drive this chat — voice-first for the car"
-                    />
-                  </div>
-                )}
               </div>
 
               {/* Messages */}
@@ -435,8 +426,38 @@ export function ChatView({
                 })}
               </div>
 
-              {/* Composer */}
-              <div className="shrink-0 border-t border-white/10 bg-black/70 px-2 py-2 flex items-end gap-2">
+              {/* Composer — shared <EntryBar> shell (same chrome as the
+                  canvas entry bar). Drive moved OUT of the room header and
+                  INTO the icon cluster so the drive-mode affordance sits in
+                  the same place on every surface that takes text. */}
+              <EntryBar
+                testId="chat-composer-bar"
+                label="Chat"
+                isMobile={isMobile}
+                alignItems="end"
+                actions={
+                  onStartDrive ? (
+                    <EntryBarIconCluster>
+                      <DriveButton
+                        testId="chat-drive-start"
+                        onClick={() => onStartDrive(activeRoom.id, activeRoom.name, me)}
+                        size={isMobile ? "mobile" : "compact"}
+                        title="Drive this chat — voice-first for the car"
+                      />
+                    </EntryBarIconCluster>
+                  ) : null
+                }
+                submit={
+                  <ToolbarPill
+                    tone="accent"
+                    onClick={send}
+                    disabled={sending || !composer.trim()}
+                    className="shrink-0"
+                  >
+                    {sending ? "…" : "Send"}
+                  </ToolbarPill>
+                }
+              >
                 <TextField
                   multiline
                   value={composer}
@@ -444,18 +465,12 @@ export function ChatView({
                   onSubmit={send}
                   placeholder={`Message ${activeRoom.name}…`}
                   rows={1}
-                  className="max-h-40"
+                  bordered={false}
+                  size={isMobile ? "base" : "sm"}
+                  className="tracking-tight text-white max-h-40"
                   style={{ minHeight: 40 }}
                 />
-                <ToolbarPill
-                  tone="accent"
-                  onClick={send}
-                  disabled={sending || !composer.trim()}
-                  className="shrink-0"
-                >
-                  {sending ? "…" : "Send"}
-                </ToolbarPill>
-              </div>
+              </EntryBar>
             </>
           )}
         </div>

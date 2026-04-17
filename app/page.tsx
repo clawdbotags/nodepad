@@ -19,6 +19,7 @@ import { DriveButton, SteeringWheelIcon } from "@/components/ui/drive-button"
 import { SidebarListItem } from "@/components/ui/sidebar-list-item"
 import { ToolbarPill } from "@/components/ui/toolbar-pill"
 import { CloseIcon, MicIcon, SpeakerIcon, SpinnerIcon } from "@/components/ui/icons"
+import { EntryBar, EntryBarIconCluster, EntryBarIconDivider } from "@/components/ui/entry-bar"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -3129,92 +3130,67 @@ export default function Page() {
         </div>
         {/* /Content area */}
 
-        {/* Bottom text input (v1 VimInput style) — shrink-0 sibling of the
-            content wrapper so it never overlays the views. On mobile we trim
-            chrome (no "Entry" label, no ⌘Z hint, tighter padding) so the
-            input + mic + Submit all fit in 390px. */}
-        <div data-testid="entry-bar" className={`relative shrink-0 z-30 w-full border-t border-white/20 bg-black/80 backdrop-blur-3xl flex items-center transition-all duration-300 focus-within:border-primary/40 ${
-          isMobile ? "px-2 py-2 gap-2" : "px-6 py-5 gap-4"
-        }`}>
-          <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent" />
-          <div className={`flex items-center flex-1 min-w-0 ${isMobile ? "gap-2" : "gap-3"}`}>
-            {!isMobile && (
-              <div className="font-mono text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] select-none">
-                Entry
-              </div>
-            )}
-            <TextField
-              ref={canvasInputRef}
-              data-testid="canvas-input"
-              value={inputText}
-              onChange={e => setInputText(e.target.value)}
-              onSubmit={() => {
-                if (inputText.trim()) {
-                  createBlock(inputText)
-                  setInputText("")
-                }
-              }}
-              placeholder={isMobile ? "Capture…" : "Capture something..."}
-              bordered={false}
-              size={isMobile ? "base" : "sm"}
-              className="tracking-tight text-white"
-              autoFocus={!isMobile}
-            />
-          </div>
-          <div className={`flex items-center shrink-0 ${isMobile ? "gap-1.5" : "gap-3"}`}>
-            {/* Icon cluster — same minimal-pill treatment as the zoom toolbar.
-                Mic toggles voice input → /api/transcribe (Whisper). Sketch creates
-                a new drawing block + opens the editor. Both are intentionally
-                icon-only so they read as utilities, not actions. Bigger tap
-                targets on mobile (h-11 = 44px Apple HIG minimum). */}
-            <div className="flex items-center rounded-sm border border-white/10 bg-white/[0.03]">
-              <VoiceMicButton
-                testId="voice-input-btn"
-                variant="entry"
-                recording={recording}
-                transcribing={transcribing}
-                onToggle={toggleRecording}
-                disabled={transcribing || !activeSessionId}
-                isMobile={isMobile}
-              />
-              <div className={`w-px bg-white/10 ${isMobile ? "h-6" : "h-4"}`} />
-              <button
-                data-testid="new-drawing-btn"
-                onClick={createDrawingBlock}
-                disabled={!activeSessionId}
-                title="New drawing block"
-                aria-label="New drawing block"
-                className={`flex items-center justify-center text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-30 disabled:hover:bg-transparent transition-colors ${
-                  isMobile ? "h-11 w-11" : "h-7 w-8"
-                }`}
-              >
-                <svg width={isMobile ? "18" : "13"} height={isMobile ? "18" : "13"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 19l7-7 3 3-7 7-3-3z" />
-                  <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
-                  <path d="M2 2l7.586 7.586" />
-                  <circle cx="11" cy="11" r="2" />
-                </svg>
-              </button>
-              <div className={`w-px bg-white/10 ${isMobile ? "h-6" : "h-4"}`} />
-              <DriveButton
-                testId="drive-mode-btn"
-                onClick={openDriveMode}
-                disabled={!activeSessionId}
-                size={isMobile ? "mobile" : "compact"}
-              />
-            </div>
-            {!isMobile && (
-              <>
-                <div className="h-4 w-px bg-white/10" />
-                <div className="flex items-center gap-2">
-                  <kbd className="flex h-5 items-center rounded border border-white/10 bg-white/5 px-1.5 font-mono text-[9px] text-white/60">
-                    <span className="text-[11px] mr-1">⌘</span><span>Z</span>
-                  </kbd>
-                  <span className="text-[9px] font-mono font-bold text-white/55 uppercase tracking-tighter">Undo</span>
-                </div>
-                <div className="h-4 w-px bg-white/10" />
-              </>
-            )}
+        {/* Bottom text input — shared <EntryBar> shell (same chrome + layout
+            as the chat composer). Canvas-specific pieces: the input creates
+            blocks on submit, the icon cluster holds mic + drawing + drive,
+            and desktop shows an ⌘Z Undo hint before Submit. */}
+        <EntryBar
+          testId="entry-bar"
+          label="Entry"
+          isMobile={isMobile}
+          actions={
+            <>
+              <EntryBarIconCluster>
+                <VoiceMicButton
+                  testId="voice-input-btn"
+                  variant="entry"
+                  recording={recording}
+                  transcribing={transcribing}
+                  onToggle={toggleRecording}
+                  disabled={transcribing || !activeSessionId}
+                  isMobile={isMobile}
+                />
+                <EntryBarIconDivider isMobile={isMobile} />
+                <button
+                  data-testid="new-drawing-btn"
+                  onClick={createDrawingBlock}
+                  disabled={!activeSessionId}
+                  title="New drawing block"
+                  aria-label="New drawing block"
+                  className={`flex items-center justify-center text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-30 disabled:hover:bg-transparent transition-colors ${
+                    isMobile ? "h-11 w-11" : "h-7 w-8"
+                  }`}
+                >
+                  <svg width={isMobile ? "18" : "13"} height={isMobile ? "18" : "13"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                    <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+                    <path d="M2 2l7.586 7.586" />
+                    <circle cx="11" cy="11" r="2" />
+                  </svg>
+                </button>
+                <EntryBarIconDivider isMobile={isMobile} />
+                <DriveButton
+                  testId="drive-mode-btn"
+                  onClick={openDriveMode}
+                  disabled={!activeSessionId}
+                  size={isMobile ? "mobile" : "compact"}
+                />
+              </EntryBarIconCluster>
+              {!isMobile && (
+                <>
+                  <div className="h-4 w-px bg-white/10" />
+                  <div className="flex items-center gap-2">
+                    <kbd className="flex h-5 items-center rounded border border-white/10 bg-white/5 px-1.5 font-mono text-[9px] text-white/60">
+                      <span className="text-[11px] mr-1">⌘</span><span>Z</span>
+                    </kbd>
+                    <span className="text-[9px] font-mono font-bold text-white/55 uppercase tracking-tighter">Undo</span>
+                  </div>
+                  <div className="h-4 w-px bg-white/10" />
+                </>
+              )}
+            </>
+          }
+          submit={
             <button
               data-testid="entry-submit"
               onClick={() => {
@@ -3230,8 +3206,26 @@ export default function Page() {
             >
               {isMobile ? "Send" : "Submit"}
             </button>
-          </div>
-        </div>
+          }
+        >
+          <TextField
+            ref={canvasInputRef}
+            data-testid="canvas-input"
+            value={inputText}
+            onChange={e => setInputText(e.target.value)}
+            onSubmit={() => {
+              if (inputText.trim()) {
+                createBlock(inputText)
+                setInputText("")
+              }
+            }}
+            placeholder={isMobile ? "Capture…" : "Capture something..."}
+            bordered={false}
+            size={isMobile ? "base" : "sm"}
+            className="tracking-tight text-white"
+            autoFocus={!isMobile}
+          />
+        </EntryBar>
 
         {/* Confirm dialog */}
         {confirmState.open && (
