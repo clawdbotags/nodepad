@@ -203,12 +203,38 @@ function classifyIntent(raw: string): Classification {
 export async function POST(req: Request) {
   const t0 = Date.now()
   try {
-    const body = await req.json().catch(() => ({}))
+    const rawBody = await req.text()
+    const body = (() => { try { return JSON.parse(rawBody) } catch { return {} } })()
     const transcript: string = String(body.transcript || "").slice(0, 2000)
     const sessionId: string = String(body.session_id || "")
 
     if (!transcript) return NextResponse.json({ error: "transcript required" }, { status: 400 })
     if (!sessionId) return NextResponse.json({ error: "session_id required" }, { status: 400 })
+
+    // Optional backend switch — if settings.driveBackend === "qwen-tools",
+    // forward to the self-hosted Qwen3.6 tool-calling endpoint instead of
+    // running the OpenRouter classifier+responder pipeline below.
+    const settingsForBackend = loadSettings()
+    if (settingsForBackend.driveBackend === "qwen-tools") {
+      try {
+        const hdrs = await headers()
+        const host = hdrs.get("host") || "localhost:3034"
+        const proto = hdrs.get("x-forwarded-proto") || "http"
+        const fwd = await fetch(`${proto}://${host}/api/drive-turn-tools`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: rawBody,
+        })
+        const text = await fwd.text()
+        return new NextResponse(text, {
+          status: fwd.status,
+          headers: { "Content-Type": "application/json" },
+        })
+      } catch (e: any) {
+        console.warn("[drive-turn] qwen-tools backend forward failed, falling back:", e?.message)
+        // fall through to OpenRouter pipeline
+      }
+    }
 
     const session = getSession(sessionId)
     if (!session) return NextResponse.json({ error: "session not found" }, { status: 404 })
