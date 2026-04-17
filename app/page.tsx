@@ -2815,6 +2815,14 @@ export default function Page() {
               <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/35">
                 {driveTurnCount > 0 ? `${driveTurnCount} turn${driveTurnCount === 1 ? "" : "s"} this session` : "First turn"}
               </div>
+              {/* Debug strip — visible state machine. Lets us diagnose stuck-loop
+                  reports from a screenshot without needing browser devtools. */}
+              <div
+                data-testid="drive-mode-debug"
+                className="font-mono text-[9px] tracking-[0.15em] text-white/30"
+              >
+                state={driveStatus} · rec={String(driveVoice.recording)} · trans={String(driveVoice.transcribing)} · arm={String(driveAutoArmRef.current)}
+              </div>
             </div>
           </div>
         )}
