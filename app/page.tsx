@@ -916,7 +916,15 @@ export default function Page() {
   const [driveStatus, setDriveStatus] = useState<DriveStatus>("idle")
   const [driveLastRundown, setDriveLastRundown] = useState<string>("")
   const [driveTurnCount, setDriveTurnCount] = useState(0)
+  const [driveLastTranscript, setDriveLastTranscript] = useState<string>("")
+  const [driveAudioStatus, setDriveAudioStatus] = useState<string>("")
   const driveAudioRef = useRef<HTMLAudioElement | null>(null)
+  // Web Audio API context — created in user-gesture (openDriveMode) so iOS
+  // unlocks audio for the whole session. Subsequent .play() calls outside
+  // the gesture (after async augment + TTS fetch) work because Web Audio,
+  // unlike HTMLAudioElement, doesn't re-check the gesture per .start().
+  const driveAudioCtxRef = useRef<AudioContext | null>(null)
+  const driveAudioSrcRef = useRef<AudioBufferSourceNode | null>(null)
   const driveAutoArmRef = useRef<boolean>(false)
   // Refs to break the circular dep between runDriveTurn and driveVoice.
   // Both are defined below; the recorder's callbacks read these refs at
@@ -954,11 +962,14 @@ export default function Page() {
     onTranscript: text => {
       // If we're not in drive mode anymore (user closed it mid-recording), ignore.
       if (!driveAutoArmRef.current) return
+      // Surface what was heard so user can see if Whisper got it right.
+      setDriveLastTranscript(text)
       runDriveTurnRef.current?.(text)
     },
     onError: msg => {
       console.warn("drive voice error:", msg)
       setDriveLastRundown(msg)
+      setDriveLastTranscript("")
       safeRearm()
     },
   })
@@ -1025,77 +1036,98 @@ export default function Page() {
 
       // TTS — Kokoro via /api/speak. If TTS fails, just go back to listening.
       setDriveStatus("speaking")
+      setDriveAudioStatus("fetching tts…")
       try {
         const speakRes = await fetch("/api/speak", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: rundown, format: "mp3" }),
         })
-        if (!speakRes.ok) throw new Error(`speak ${speakRes.status}`)
+        if (!speakRes.ok) throw new Error(`tts ${speakRes.status}`)
         const audioBuf = await speakRes.arrayBuffer()
-        const blob = new Blob([audioBuf], { type: "audio/mpeg" })
-        const url = URL.createObjectURL(blob)
-        // Reuse the same Audio element so iOS keeps the play permission.
-        let audio = driveAudioRef.current
-        if (!audio) {
-          audio = new Audio()
-          driveAudioRef.current = audio
-        }
-        // Defensive reset — clear any prior handlers so a stale onended can't
-        // double-fire and a previous fallback timer can't clobber this turn.
-        audio.onended = null
-        audio.onerror = null
-        audio.onloadedmetadata = null
-        audio.loop = false
-        try { audio.pause() } catch {}
-        audio.src = url
+        setDriveAudioStatus(`got ${(audioBuf.byteLength / 1024).toFixed(1)} KB`)
 
-        // Fallback rearm: iOS Safari sometimes silently drops `audio.onended`
-        // events on a reused HTMLAudioElement. Schedule a max-duration timer
-        // and clear it from onended/onerror. Default to 30s if metadata never
-        // arrives; bump to actual duration + 1.5s buffer once we know it.
+        // Fallback timer — guarantees rearm even if everything below silently
+        // drops. Refined to actual duration once we know it.
         let rearmTimer: ReturnType<typeof setTimeout> | null = null
         const armFallback = (ms: number) => {
           if (rearmTimer) clearTimeout(rearmTimer)
           console.log(`[drive] arming fallback rearm timer: ${ms}ms`)
           rearmTimer = setTimeout(() => {
-            console.warn("[drive] fallback rearm fired (audio.onended likely never came)")
+            console.warn("[drive] fallback rearm fired")
+            setDriveAudioStatus("(rearm fallback)")
             safeRearm()
           }, ms)
         }
         const clearFallback = () => {
           if (rearmTimer) { clearTimeout(rearmTimer); rearmTimer = null }
         }
-        audio.onloadedmetadata = () => {
-          if (Number.isFinite(audio!.duration) && audio!.duration > 0) {
-            armFallback(Math.ceil(audio!.duration * 1000) + 1500)
-          }
-        }
-        audio.onended = () => {
-          console.log("[drive] audio.onended")
-          clearFallback()
-          URL.revokeObjectURL(url)
-          safeRearm()
-        }
-        audio.onerror = (e) => {
-          console.warn("[drive] audio.onerror", e)
-          clearFallback()
-          URL.revokeObjectURL(url)
-          safeRearm()
-        }
-        // Initial 30s ceiling — replaced once metadata loads.
-        armFallback(30000)
+        armFallback(30000) // ceiling, refined below
 
-        try {
-          await audio.play()
-          console.log("[drive] audio.play() resolved, duration:", audio.duration)
-        } catch (err) {
-          console.warn("[drive] audio play failed:", err)
-          clearFallback()
-          safeRearm()
+        // Path A: Web Audio API. Unlocked once in openDriveMode under a real
+        // user gesture; .start() works from anywhere after. iOS reliable.
+        const ctx = driveAudioCtxRef.current
+        let played = false
+        if (ctx) {
+          try {
+            if (ctx.state === "suspended") await ctx.resume()
+            // decodeAudioData wants its own copy of the buffer (it transfers).
+            const decoded = await ctx.decodeAudioData(audioBuf.slice(0))
+            // Stop any prior source.
+            try { driveAudioSrcRef.current?.stop() } catch {}
+            const src = ctx.createBufferSource()
+            src.buffer = decoded
+            src.connect(ctx.destination)
+            src.onended = () => {
+              console.log("[drive] webaudio source.onended")
+              clearFallback()
+              setDriveAudioStatus("")
+              safeRearm()
+            }
+            armFallback(Math.ceil(decoded.duration * 1000) + 1500)
+            src.start(0)
+            driveAudioSrcRef.current = src
+            played = true
+            setDriveAudioStatus(`▶ ${decoded.duration.toFixed(1)}s`)
+            console.log(`[drive] webaudio playing, duration=${decoded.duration.toFixed(2)}s`)
+          } catch (waErr: any) {
+            console.warn("[drive] webaudio failed, falling back to HTMLAudio:", waErr?.message)
+            setDriveAudioStatus(`webaudio failed: ${waErr?.message || waErr}`)
+          }
+        } else {
+          console.warn("[drive] no AudioContext — using HTMLAudio fallback")
+        }
+
+        // Path B: HTMLAudioElement fallback (only if Path A didn't fire).
+        if (!played) {
+          const blob = new Blob([audioBuf], { type: "audio/mpeg" })
+          const url = URL.createObjectURL(blob)
+          let audio = driveAudioRef.current
+          if (!audio) { audio = new Audio(); driveAudioRef.current = audio }
+          audio.onended = null; audio.onerror = null; audio.onloadedmetadata = null
+          audio.loop = false
+          try { audio.pause() } catch {}
+          audio.src = url
+          audio.onloadedmetadata = () => {
+            if (Number.isFinite(audio!.duration) && audio!.duration > 0) {
+              armFallback(Math.ceil(audio!.duration * 1000) + 1500)
+            }
+          }
+          audio.onended = () => { clearFallback(); URL.revokeObjectURL(url); setDriveAudioStatus(""); safeRearm() }
+          audio.onerror = () => { clearFallback(); URL.revokeObjectURL(url); setDriveAudioStatus("audio error"); safeRearm() }
+          try {
+            await audio.play()
+            setDriveAudioStatus("▶ html-audio")
+          } catch (err: any) {
+            console.warn("[drive] HTMLAudio play failed:", err)
+            setDriveAudioStatus(`play blocked: ${err?.message || err}`)
+            clearFallback()
+            safeRearm()
+          }
         }
       } catch (e: any) {
         console.warn("[drive] TTS failed:", e?.message || e)
+        setDriveAudioStatus(`tts error: ${e?.message || e}`)
         safeRearm()
       }
     } catch (e: any) {
@@ -1111,7 +1143,11 @@ export default function Page() {
   useEffect(() => { runDriveTurnRef.current = runDriveTurn }, [runDriveTurn])
 
   // Open Drive Mode — flip auto-arm flag and start the first listen.
-  const openDriveMode = useCallback(() => {
+  // CRITICAL: this runs inside a real user gesture (button click). We use it
+  // to: (a) create + resume an AudioContext so iOS unlocks audio for the
+  // session, (b) play a brief tone so the user knows audio is reaching the
+  // speaker BEFORE the first AI rundown.
+  const openDriveMode = useCallback(async () => {
     if (!activeSessionId) {
       showToast("Pick a canvas first")
       return
@@ -1119,8 +1155,44 @@ export default function Page() {
     driveAutoArmRef.current = true
     setDriveOpen(true)
     setDriveLastRundown("")
+    setDriveLastTranscript("")
+    setDriveAudioStatus("")
     setDriveTurnCount(0)
     setDriveStatus("listening")
+
+    // iOS audio unlock: create AudioContext synchronously inside the gesture.
+    try {
+      if (!driveAudioCtxRef.current) {
+        const Ctor = (window as any).AudioContext || (window as any).webkitAudioContext
+        if (Ctor) driveAudioCtxRef.current = new Ctor()
+      }
+      const ctx = driveAudioCtxRef.current
+      if (ctx) {
+        if (ctx.state === "suspended") await ctx.resume()
+        // Brief 220 Hz beep (120 ms, fade out) so user knows audio works.
+        try {
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
+          osc.frequency.value = 440
+          gain.gain.setValueAtTime(0.0001, ctx.currentTime)
+          gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.01)
+          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12)
+          osc.connect(gain).connect(ctx.destination)
+          osc.start(ctx.currentTime)
+          osc.stop(ctx.currentTime + 0.13)
+          setDriveAudioStatus("audio unlocked ✓")
+          console.log("[drive] audio unlock chime played")
+        } catch (chimeErr) {
+          console.warn("[drive] chime failed:", chimeErr)
+        }
+      } else {
+        setDriveAudioStatus("no AudioContext — audio may not work")
+      }
+    } catch (e: any) {
+      console.warn("[drive] audio unlock failed:", e?.message)
+      setDriveAudioStatus(`unlock failed: ${e?.message || e}`)
+    }
+
     setTimeout(() => { driveVoiceRef.current?.start() }, 120)
   }, [activeSessionId, showToast])
 
@@ -1133,8 +1205,12 @@ export default function Page() {
     if (a) {
       try { a.pause(); a.src = ""; a.onended = null; a.onerror = null } catch {}
     }
+    try { driveAudioSrcRef.current?.stop() } catch {}
+    driveAudioSrcRef.current = null
+    // Don't close AudioContext — keep it warm for next openDriveMode.
     setDriveOpen(false)
     setDriveStatus("idle")
+    setDriveAudioStatus("")
   }, [])
 
   // Big-button handler in the overlay — meaning depends on current state.
@@ -2804,19 +2880,39 @@ export default function Page() {
               </div>
             </div>
 
-            {/* Bottom — last rundown text + turn count */}
+            {/* Bottom — what was heard, what was done, and audio status */}
             <div className="w-full flex flex-col items-center gap-2">
+              {/* Transcript — what Whisper heard. */}
+              {driveLastTranscript && (
+                <div
+                  data-testid="drive-mode-transcript"
+                  className="w-full max-w-[600px] rounded-sm border border-amber-400/20 bg-amber-400/[0.04] px-4 py-2 font-mono text-[13px] leading-snug text-amber-200/90 text-center"
+                >
+                  <span className="opacity-60">heard: </span>
+                  &ldquo;{driveLastTranscript}&rdquo;
+                </div>
+              )}
+              {/* Rundown — what got done on the canvas (and what TTS spoke). */}
               <div
                 data-testid="drive-mode-rundown"
                 className="min-h-[64px] w-full max-w-[600px] rounded-sm border border-white/10 bg-white/[0.03] px-4 py-3 font-mono text-[14px] leading-snug text-white/85 text-center"
               >
                 {driveLastRundown || (driveStatus === "listening" ? "Speak now…" : "")}
               </div>
+              {/* Audio status line — visible "the audio just did X" so we can
+                  diagnose silent-failure cases from a screenshot. */}
+              {driveAudioStatus && (
+                <div
+                  data-testid="drive-mode-audio-status"
+                  className="font-mono text-[10px] tracking-[0.1em] text-emerald-300/70"
+                >
+                  audio: {driveAudioStatus}
+                </div>
+              )}
               <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/35">
                 {driveTurnCount > 0 ? `${driveTurnCount} turn${driveTurnCount === 1 ? "" : "s"} this session` : "First turn"}
               </div>
-              {/* Debug strip — visible state machine. Lets us diagnose stuck-loop
-                  reports from a screenshot without needing browser devtools. */}
+              {/* Debug strip — visible state machine. */}
               <div
                 data-testid="drive-mode-debug"
                 className="font-mono text-[9px] tracking-[0.15em] text-white/30"
