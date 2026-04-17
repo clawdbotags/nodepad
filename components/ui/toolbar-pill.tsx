@@ -1,0 +1,54 @@
+"use client"
+
+/**
+ * ToolbarPill — the uppercase · tracking-wider · mono · rounded-sm button
+ * that appears in 20+ places across nodepad (sidebar footer actions,
+ * modal primary/cancel buttons, viewport reset, augment submit, etc.).
+ *
+ * Tones align with the existing palette — don't invent new ones:
+ *  - primary : solid primary fill, white text          (submit CTAs)
+ *  - accent  : primary-tinted bordered fill            (Drive, accents)
+ *  - amber   : amber-tinted bordered fill              (Report action)
+ *  - ghost   : transparent with hover-tint             (Cancel, tertiary)
+ *  - danger  : destructive-tinted solid                (confirm deletes)
+ */
+
+import type { ButtonHTMLAttributes, ReactNode } from "react"
+
+export type ToolbarPillTone =
+  | "primary"
+  | "accent"
+  | "amber"
+  | "ghost"
+  | "danger"
+
+const TONES: Record<ToolbarPillTone, string> = {
+  primary:
+    "bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-30 active:scale-[0.98]",
+  accent:
+    "border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary disabled:opacity-40",
+  amber:
+    "bg-amber-500/80 hover:bg-amber-500 text-black disabled:opacity-30 active:scale-[0.98]",
+  ghost:
+    "text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-40",
+  danger:
+    "bg-destructive/90 hover:bg-destructive text-white disabled:opacity-30 active:scale-[0.98]",
+}
+
+export function ToolbarPill({
+  tone = "ghost",
+  className = "",
+  children,
+  ...rest
+}: {
+  tone?: ToolbarPillTone
+  className?: string
+  children: ReactNode
+} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className">) {
+  const cls = `rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors ${TONES[tone]} ${className}`
+  return (
+    <button className={cls} {...rest}>
+      {children}
+    </button>
+  )
+}

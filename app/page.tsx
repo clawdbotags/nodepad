@@ -14,6 +14,8 @@ import { AILogPanel } from "@/components/ai-log-panel"
 import { VoiceMicButton } from "@/components/ui/voice-mic-button"
 import { BlockEditTextarea } from "@/components/ui/block-edit-textarea"
 import { TextField } from "@/components/ui/text-field"
+import { NavTabs } from "@/components/ui/nav-tabs"
+import { DriveButton } from "@/components/ui/drive-button"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -2374,19 +2376,13 @@ export default function Page() {
               its own sidebar). Keeping the chat experience on its own route
               lets the main content area be a full-width timeline when a
               room's open, and also lets drive-mode state live there. */}
-          <div data-testid="sidebar-mode-tabs" className="shrink-0 flex items-center gap-1 border-b border-white/10 bg-black/30 px-2 py-1.5">
-            <button
-              className="flex-1 rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary"
-            >
-              Nodes
-            </button>
-            <a
-              href="/chat"
-              className="flex-1 text-center rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] hover:text-primary hover:border-primary/35 border border-transparent transition-all"
-            >
-              Rooms
-            </a>
-          </div>
+          <NavTabs
+            testId="sidebar-mode-tabs"
+            items={[
+              { key: "nodes", label: "Nodes", active: true },
+              { key: "rooms", label: "Rooms", href: "/chat" },
+            ]}
+          />
 
           {/* Session list */}
           <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5 custom-scrollbar">
@@ -3242,25 +3238,12 @@ export default function Page() {
                 </svg>
               </button>
               <div className={`w-px bg-white/10 ${isMobile ? "h-6" : "h-4"}`} />
-              <button
-                data-testid="drive-mode-btn"
+              <DriveButton
+                testId="drive-mode-btn"
                 onClick={openDriveMode}
                 disabled={!activeSessionId}
-                title="Drive Mode — hands-off voice loop"
-                aria-label="Open Drive Mode"
-                className={`flex items-center justify-center text-white/55 hover:bg-white/[0.06] hover:text-white/85 disabled:opacity-30 disabled:hover:bg-transparent transition-colors ${
-                  isMobile ? "h-11 w-11" : "h-7 w-8"
-                }`}
-              >
-                <svg width={isMobile ? "20" : "14"} height={isMobile ? "20" : "14"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  {/* steering wheel icon — circle with cross-spokes */}
-                  <circle cx="12" cy="12" r="9" />
-                  <circle cx="12" cy="12" r="2.5" />
-                  <line x1="12" y1="2.5" x2="12" y2="9.5" />
-                  <line x1="3" y1="12" x2="9.5" y2="12" />
-                  <line x1="14.5" y1="12" x2="21" y2="12" />
-                </svg>
-              </button>
+                size={isMobile ? "mobile" : "compact"}
+              />
             </div>
             {!isMobile && (
               <>

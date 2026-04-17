@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { TextField } from "@/components/ui/text-field"
+import { SidebarListItem } from "@/components/ui/sidebar-list-item"
+import { DriveButton } from "@/components/ui/drive-button"
+import { ToolbarPill } from "@/components/ui/toolbar-pill"
 
 /**
  * Matrix-backed chat view for nodepad. Shows rooms Albert's account has
@@ -316,43 +319,33 @@ export function ChatView({
             {initialLoaded && !error && rooms.length === 0 && (
               <div className="px-3 py-4 text-[11px] text-white/40">No rooms</div>
             )}
-            {rooms.map(r => {
-              const isActive = r.id === activeRoomId
-              return (
-                <button
-                  key={r.id}
-                  onClick={() => setActiveRoomId(r.id)}
-                  className={`w-full text-left px-3 py-2 border-b border-white/5 transition-colors ${
-                    isActive
-                      ? "bg-primary/10 border-l-2 border-l-primary"
-                      : "hover:bg-white/[0.04] border-l-2 border-l-transparent"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={`truncate text-[13px] ${isActive ? "text-primary" : "text-white/85"}`}>
-                      {r.name}
+            {rooms.map(r => (
+              <SidebarListItem
+                key={r.id}
+                active={r.id === activeRoomId}
+                onClick={() => setActiveRoomId(r.id)}
+                label={r.name}
+                badge={
+                  r.unread > 0 ? (
+                    <span className="inline-flex items-center justify-center rounded-full bg-red-500/90 px-1.5 min-w-[18px] h-[18px] text-[10px] font-bold text-white">
+                      {r.unread}
                     </span>
-                    {r.unread > 0 && (
-                      <span className="ml-auto inline-flex items-center justify-center rounded-full bg-red-500/90 px-1.5 min-w-[18px] h-[18px] text-[10px] font-bold text-white">
-                        {r.unread}
-                      </span>
-                    )}
-                  </div>
-                  {r.lastMessage && (
-                    <div className="text-[11px] text-white/45 truncate mt-0.5">
+                  ) : null
+                }
+                subtitle={
+                  r.lastMessage ? (
+                    <>
                       <span style={{ color: senderColor(r.lastMessage.sender) }}>
                         {senderDisplay(r.lastMessage.sender)}
                       </span>
                       <span className="text-white/30"> · </span>
                       <span className="text-white/55">{r.lastMessage.body}</span>
-                    </div>
-                  )}
-                  <div className="text-[9px] text-white/25 mt-0.5 uppercase tracking-wider">
-                    {r.lastMessage ? formatTime(r.lastMessage.ts) : ""}
-                  </div>
-                </button>
-              )
-            })}
+                    </>
+                  ) : null
+                }
+                meta={r.lastMessage ? formatTime(r.lastMessage.ts) : null}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -387,18 +380,14 @@ export function ChatView({
                   )}
                 </div>
                 {onStartDrive && (
-                  <button
-                    data-testid="chat-drive-start"
-                    onClick={() => onStartDrive(activeRoom.id, activeRoom.name, me)}
-                    title="Drive this chat — voice-first for the car"
-                    className="ml-auto flex items-center gap-1.5 rounded-sm border border-primary/40 bg-primary/10 hover:bg-primary/20 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary transition-colors"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="12" r="9" />
-                      <circle cx="12" cy="12" r="2.5" />
-                    </svg>
-                    Drive
-                  </button>
+                  <div className="ml-auto">
+                    <DriveButton
+                      testId="chat-drive-start"
+                      variant="pill"
+                      onClick={() => onStartDrive(activeRoom.id, activeRoom.name, me)}
+                      title="Drive this chat — voice-first for the car"
+                    />
+                  </div>
                 )}
               </div>
 
@@ -458,13 +447,14 @@ export function ChatView({
                   className="max-h-40"
                   style={{ minHeight: 40 }}
                 />
-                <button
+                <ToolbarPill
+                  tone="accent"
                   onClick={send}
                   disabled={sending || !composer.trim()}
-                  className="shrink-0 rounded-sm border border-primary/40 bg-primary/15 hover:bg-primary/25 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-primary transition-colors"
+                  className="shrink-0"
                 >
                   {sending ? "…" : "Send"}
-                </button>
+                </ToolbarPill>
               </div>
             </>
           )}

@@ -13,6 +13,7 @@
 import { useEffect, useState } from "react"
 import { ChatView } from "@/components/chat-view"
 import { ChatDriveView } from "@/components/chat-drive-view"
+import { NavTabs } from "@/components/ui/nav-tabs"
 
 export default function ChatPage() {
   const [isMobile, setIsMobile] = useState(false)
@@ -32,19 +33,13 @@ export default function ChatPage() {
   // here, "Nodes" routes back to /. Using <a> (full navigation) so page.tsx
   // can remount its state fresh each time.
   const sidebarTabs = (
-    <div className="shrink-0 flex items-center gap-1 border-b border-white/10 bg-black/30 px-2 py-1.5">
-      <a
-        href="/"
-        className="flex-1 text-center rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] hover:text-primary hover:border-primary/35 border border-transparent transition-all"
-      >
-        Nodes
-      </a>
-      <button
-        className="flex-1 rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary"
-      >
-        Rooms
-      </button>
-    </div>
+    <NavTabs
+      testId="sidebar-mode-tabs"
+      items={[
+        { key: "nodes", label: "Nodes", href: "/" },
+        { key: "rooms", label: "Rooms", active: true },
+      ]}
+    />
   )
 
   return (
