@@ -70,6 +70,8 @@ export function ChatView({
   isMobile = false,
   onStartDrive,
   sidebarTabs,
+  sidebarOpen = true,
+  onCloseSidebar,
 }: {
   isMobile?: boolean
   onStartDrive?: (roomId: string, roomName: string, me: string | null) => void
@@ -77,6 +79,12 @@ export function ChatView({
    *  view (mobile). Used by the /chat page to render the same Nodes|Rooms
    *  toggle that appears in the canvas sidebar. */
   sidebarTabs?: React.ReactNode
+  /** Desktop only: when false, the room-list column collapses so the
+   *  timeline gets full width. Mirrors the canvas aside's collapse so
+   *  the left pane is collapsible in both modes. Mobile already hides the
+   *  list when a room is active, so this prop is ignored there. */
+  sidebarOpen?: boolean
+  onCloseSidebar?: () => void
 }) {
   const [rooms, setRooms] = useState<Room[]>([])
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null)
@@ -297,8 +305,12 @@ export function ChatView({
 
 
   // ── Layout ──────────────────────────────────────────────────────────────
+  // Desktop: list respects sidebarOpen so users can collapse it and give
+  // the timeline full width (same ergonomic as the canvas aside).
+  // Mobile: old single-pane rule — list vs timeline controlled by whether
+  // a room is active.
   const showTimeline = isMobile ? !!activeRoomId : true
-  const showList = isMobile ? !activeRoomId : true
+  const showList = isMobile ? !activeRoomId : sidebarOpen
 
   return (
     <div className="absolute inset-0 flex bg-black text-white/90 text-sm">
@@ -318,6 +330,19 @@ export function ChatView({
               <span className="ml-auto text-[10px] text-white/40 truncate" title={me}>
                 {senderDisplay(me)}
               </span>
+            )}
+            {/* Desktop collapse chevron — mirrors the canvas aside's ‹
+                close button so the left pane behaves identically in both
+                modes. Hidden on mobile (list IS the screen there). */}
+            {!isMobile && onCloseSidebar && (
+              <button
+                data-testid="rooms-sidebar-close"
+                onClick={onCloseSidebar}
+                className={`${me ? "" : "ml-auto"} p-1 -my-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-white/5 font-mono text-sm transition-colors`}
+                title="Hide rooms list"
+              >
+                ‹
+              </button>
             )}
           </div>
           <div className="flex-1 overflow-y-auto">

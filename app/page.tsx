@@ -2519,15 +2519,17 @@ export default function Page() {
         </div>
       </aside>
 
-      {/* Sidebar open button (visible when collapsed). Bigger tap target on
-          mobile so it sits comfortably in the top bar's left padding slot.
-          Hidden in Rooms mode — ChatView owns the left pane there and has
-          its own Nodes|Rooms tab toggle. */}
-      {!sidebarOpen && sidebarMode === "nodes" && (
+      {/* Sidebar open button (visible when collapsed). Shows in both Nodes
+          and Rooms mode — the left pane is collapsible in both. On mobile
+          we keep it suppressed in Rooms mode because ChatView's list IS
+          the whole screen there (and has the Nodes|Rooms tabs at the top),
+          so re-opening is a no-op visually. z-60 keeps it above ChatView's
+          z-40 overlay so it remains clickable when rooms list is hidden. */}
+      {!sidebarOpen && (sidebarMode === "nodes" || !isMobile) && (
         <button
           data-testid="sidebar-toggle"
           onClick={() => setSidebarOpen(true)}
-          className={`absolute z-50 rounded-sm bg-white/5 hover:bg-white/10 border border-white/10 text-muted-foreground hover:text-foreground transition-all ${
+          className={`absolute z-[60] rounded-sm bg-white/5 hover:bg-white/10 border border-white/10 text-muted-foreground hover:text-foreground transition-all ${
             isMobile ? "left-2 top-1.5 h-9 w-9 flex items-center justify-center" : "left-2 top-2 p-1.5"
           }`}
           title="Show sidebar"
@@ -3360,6 +3362,8 @@ export default function Page() {
       >
         <ChatView
           isMobile={isMobile}
+          sidebarOpen={sidebarOpen}
+          onCloseSidebar={() => setSidebarOpen(false)}
           onStartDrive={(roomId, roomName, me) =>
             setChatDriveSession({ roomId, roomName, me })
           }
