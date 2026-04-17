@@ -3384,67 +3384,32 @@ export default function Page() {
       {/* Wiki overlay — embeds wikiLLM (SilverBullet) in an iframe.
           Kept mounted with `hidden` so switching tabs doesn't re-fetch
           the whole SPA / lose scroll position / kick user back to
-          homepage. Same 240px sidebar chrome as the other modes:
-          [Nodes|Rooms|Wiki] tabs + WIKI section header + collapse ‹. */}
+          homepage. No 240px sidebar column — just a compact top strip
+          with the [Nodes|Rooms|Wiki] tabs so the iframe maxes out the
+          screen. Same behaviour on desktop and mobile. */}
       <div
-        className={`absolute inset-0 z-40 bg-black ${sidebarMode === "wiki" ? "block" : "hidden"}`}
+        className={`absolute inset-0 z-40 bg-black flex flex-col ${sidebarMode === "wiki" ? "flex" : "hidden"}`}
         aria-hidden={sidebarMode !== "wiki"}
       >
-        <div className="flex h-full">
-          {sidebarOpen && !isMobile && (
-            <div className="w-[240px] shrink-0 flex flex-col border-r border-white/10 bg-white/[0.02]">
-              <NavTabs
-                testId="sidebar-mode-tabs-wiki"
-                items={[
-                  { key: "nodes", label: "Nodes", onClick: () => setSidebarMode("nodes") },
-                  { key: "rooms", label: "Rooms", onClick: () => setSidebarMode("rooms") },
-                  { key: "wiki", label: "Wiki", active: true, onClick: () => setSidebarMode("wiki") },
-                ]}
-              />
-              <div className="shrink-0 border-b border-white/10 px-3 py-2 flex items-center gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/55">
-                  Wiki
-                </span>
-                <span className="ml-auto text-[10px] text-white/40 truncate" title="SilverBullet">
-                  silverbullet
-                </span>
-                <button
-                  data-testid="wiki-sidebar-close"
-                  onClick={() => setSidebarOpen(false)}
-                  className="p-1 -my-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-white/5 font-mono text-sm transition-colors"
-                  title="Hide sidebar"
-                >
-                  ‹
-                </button>
-              </div>
-            </div>
-          )}
-          {isMobile && (
-            /* Mobile: no sidebar column — tabs sit in a compact strip
-               at the top so the iframe maxes out the screen. */
-            <div className="absolute top-0 left-0 right-0 z-10 bg-black/80 backdrop-blur-md">
-              <NavTabs
-                testId="sidebar-mode-tabs-wiki-mobile"
-                items={[
-                  { key: "nodes", label: "Nodes", onClick: () => setSidebarMode("nodes") },
-                  { key: "rooms", label: "Rooms", onClick: () => setSidebarMode("rooms") },
-                  { key: "wiki", label: "Wiki", active: true, onClick: () => setSidebarMode("wiki") },
-                ]}
-              />
-            </div>
-          )}
-          <div className={`flex-1 h-full ${isMobile ? "pt-10" : ""}`}>
-            <iframe
-              src="https://ubuntu-4gb-hel1-1.tail6fe47c.ts.net:8443/"
-              className="w-full h-full border-0 bg-white"
-              title="wikiLLM"
-              /* allow-same-origin so SilverBullet's service worker +
-                 IndexedDB work; allow-scripts for its client JS;
-                 allow-forms + allow-downloads for normal editing UX. */
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals allow-top-navigation-by-user-activation"
-            />
-          </div>
+        <div className="shrink-0 bg-black/80 backdrop-blur-md">
+          <NavTabs
+            testId="sidebar-mode-tabs-wiki"
+            items={[
+              { key: "nodes", label: "Nodes", onClick: () => setSidebarMode("nodes") },
+              { key: "rooms", label: "Rooms", onClick: () => setSidebarMode("rooms") },
+              { key: "wiki", label: "Wiki", active: true, onClick: () => setSidebarMode("wiki") },
+            ]}
+          />
         </div>
+        <iframe
+          src="https://ubuntu-4gb-hel1-1.tail6fe47c.ts.net:8443/"
+          className="flex-1 w-full border-0 bg-white"
+          title="wikiLLM"
+          /* allow-same-origin so SilverBullet's service worker +
+             IndexedDB work; allow-scripts for its client JS;
+             allow-forms + allow-downloads for normal editing UX. */
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals allow-top-navigation-by-user-activation"
+        />
       </div>
     </div>
   )
