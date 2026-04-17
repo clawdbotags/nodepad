@@ -14,6 +14,14 @@ import { AILogPanel } from "@/components/ai-log-panel"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
+// 0.2 s of 8-bit PCM silence (8 kHz mono, 1644 bytes → 2192-char base64).
+// Looped while Drive Mode is open to keep an active MediaSession on Chrome
+// Android so Bluetooth / Android Auto / headset play-pause events route to
+// our action handlers. Muted audio doesn't count as active — must be real
+// (silent-valued) samples.
+const DRIVE_SILENT_LOOP_SRC =
+  "data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YUAGAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA"
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface Block {
@@ -926,6 +934,15 @@ export default function Page() {
   const driveAudioCtxRef = useRef<AudioContext | null>(null)
   const driveAudioSrcRef = useRef<AudioBufferSourceNode | null>(null)
   const driveAutoArmRef = useRef<boolean>(false)
+  // Silent audio loop to keep an active MediaSession while Drive Mode is open.
+  // Without an active audio source, Chrome Android won't route media-key /
+  // Bluetooth / Android Auto / headset play-pause events to our action
+  // handlers. A 0.2s all-silence WAV on loop is the standard pattern.
+  const driveSilentLoopRef = useRef<HTMLAudioElement | null>(null)
+  // Ref wrapper so MediaSession handlers registered once in openDriveMode
+  // always dispatch to the CURRENT handleDriveTap (which depends on
+  // driveStatus and safeRearm and rebinds each render).
+  const handleDriveTapRef = useRef<() => void>(() => {})
   // Refs to break the circular dep between runDriveTurn and driveVoice.
   // Both are defined below; the recorder's callbacks read these refs at
   // call-time so they always see the latest function reference.
@@ -1239,6 +1256,44 @@ export default function Page() {
       setDriveAudioStatus(`unlock failed: ${e?.message || e}`)
     }
 
+    // Start silent audio loop + wire MediaSession action handlers so Bluetooth
+    // play/pause, Android Auto "next/prev", headset button, and call-hangup
+    // events all route to handleDriveTap. Still a user-gesture context here.
+    try {
+      const silent = driveSilentLoopRef.current
+      if (silent) {
+        silent.loop = true
+        silent.volume = 0.001 // near-silent but not literal zero so the media session counts it as "playing"
+        // Some browsers suspend <audio> when tab isn't foregrounded; that's
+        // fine for our purposes — we just need MediaSession to be active.
+        try { await silent.play() } catch (playErr) {
+          console.warn("[drive] silent loop play() rejected:", playErr)
+        }
+      }
+      if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+        const ms = navigator.mediaSession
+        try {
+          ms.metadata = new (window as any).MediaMetadata({
+            title: "Drive Mode",
+            artist: "Nodepad",
+            album: "Voice canvas",
+          })
+        } catch {}
+        try { ms.playbackState = "playing" } catch {}
+        const dispatch = () => { try { handleDriveTapRef.current?.() } catch (e) { console.warn("[drive] mediasession dispatch failed:", e) } }
+        // Every commonly-routed action → unified handler. Call-hangup on
+        // Android Auto / BT typically fires "pause" or "stop"; headset
+        // click usually fires "play"/"pause"; steering-wheel next/prev on
+        // some setups fires "nexttrack"/"previoustrack".
+        for (const action of ["play", "pause", "stop", "nexttrack", "previoustrack"] as const) {
+          try { ms.setActionHandler(action, dispatch) } catch {}
+        }
+        console.log("[drive] mediasession handlers registered")
+      }
+    } catch (msErr) {
+      console.warn("[drive] mediasession setup failed:", msErr)
+    }
+
     setTimeout(() => { driveVoiceRef.current?.start() }, 120)
   }, [activeSessionId, showToast])
 
@@ -1253,6 +1308,21 @@ export default function Page() {
     }
     try { driveAudioSrcRef.current?.stop() } catch {}
     driveAudioSrcRef.current = null
+    // Stop silent loop + release MediaSession so the OS notification goes away.
+    try {
+      const silent = driveSilentLoopRef.current
+      if (silent) { silent.pause(); try { silent.currentTime = 0 } catch {} }
+    } catch {}
+    if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+      try {
+        const ms = navigator.mediaSession
+        for (const action of ["play", "pause", "stop", "nexttrack", "previoustrack"] as const) {
+          try { ms.setActionHandler(action, null) } catch {}
+        }
+        try { ms.playbackState = "none" } catch {}
+        try { ms.metadata = null } catch {}
+      } catch {}
+    }
     // Don't close AudioContext — keep it warm for next openDriveMode.
     setDriveOpen(false)
     setDriveStatus("idle")
@@ -1277,6 +1347,9 @@ export default function Page() {
     }
     // thinking → tap is no-op (waiting on server)
   }, [driveStatus, safeRearm])
+  // Keep the ref pointing at the latest handler so MediaSession callbacks
+  // registered once in openDriveMode always hit the CURRENT state branch.
+  useEffect(() => { handleDriveTapRef.current = handleDriveTap }, [handleDriveTap])
 
   // ── Delete selected blocks (with in-app confirm) ─────────────────────────
   const performDeleteSelected = useCallback(async () => {
@@ -2838,8 +2911,23 @@ export default function Page() {
         {driveOpen && (
           <div
             data-testid="drive-mode-overlay"
-            className="fixed inset-0 z-[80] flex flex-col items-center justify-between bg-black/95 backdrop-blur-2xl px-4 py-8 select-none"
+            onClick={handleDriveTap}
+            role="button"
+            tabIndex={-1}
+            className="fixed inset-0 z-[80] flex flex-col items-center justify-between bg-black/95 backdrop-blur-2xl px-4 py-8 select-none cursor-pointer"
           >
+            {/* Hidden silent audio loop — keeps MediaSession active so BT /
+                Android Auto / headset media-key events route to us while
+                Drive Mode is open. See openDriveMode + closeDriveMode. */}
+            <audio
+              ref={driveSilentLoopRef}
+              src={DRIVE_SILENT_LOOP_SRC}
+              loop
+              playsInline
+              preload="auto"
+              aria-hidden="true"
+              style={{ display: "none" }}
+            />
             {/* Top bar — title + close */}
             <div className="w-full flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2854,7 +2942,7 @@ export default function Page() {
               </div>
               <button
                 data-testid="drive-mode-close"
-                onClick={closeDriveMode}
+                onClick={e => { e.stopPropagation(); closeDriveMode() }}
                 className="flex items-center justify-center h-11 w-11 rounded-sm border border-white/15 bg-white/[0.05] hover:bg-white/[0.1] text-white/85 transition-colors"
                 aria-label="Exit Drive Mode"
               >
@@ -2876,7 +2964,7 @@ export default function Page() {
               </div>
               <button
                 data-testid="drive-mode-button"
-                onClick={handleDriveTap}
+                onClick={e => { e.stopPropagation(); handleDriveTap() }}
                 disabled={driveStatus === "thinking"}
                 className={`relative flex items-center justify-center rounded-full transition-all active:scale-[0.96] ${
                   driveStatus === "listening"
@@ -2918,11 +3006,11 @@ export default function Page() {
                   </svg>
                 )}
               </button>
-              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/40">
-                {driveStatus === "listening" && "Tap when done"}
-                {driveStatus === "speaking" && "Tap to skip"}
+              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/40 text-center">
+                {driveStatus === "listening" && "Tap anywhere · Headset / BT button · End call"}
+                {driveStatus === "speaking" && "Tap anywhere to skip"}
                 {driveStatus === "thinking" && "Hold on…"}
-                {(driveStatus === "idle" || driveStatus === "error") && "Tap the mic"}
+                {(driveStatus === "idle" || driveStatus === "error") && "Tap anywhere to re-arm"}
               </div>
             </div>
 
