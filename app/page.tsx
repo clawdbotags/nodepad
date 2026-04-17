@@ -990,28 +990,52 @@ export default function Page() {
     driveRearmedRef.current = false
     setDriveStatus("thinking")
     try {
-      // Always use structured mode in Drive Mode — it adds new blocks +
-      // connections rather than replacing existing content. This matches
-      // "creates and links the thoughts I have" from the user spec.
-      const res = await api(`/api/sessions/${activeSessionId}/augment`, {
-        method: "POST",
-        body: JSON.stringify({
-          prompt: transcript,
-          block_ids: [], // Empty scope — let the LLM operate on whole session
-          mode: "structured",
-        }),
-      })
-      // Refresh canvas state so the user sees the new blocks/connections
-      // when they look at the screen later.
-      const data = await api(`/api/sessions/${activeSessionId}`)
-      setBlocks(data.notes || [])
-      setConnections(data.connections || [])
+      // ── Single orchestration call: classify intent + dispatch + respond. ──
+      // /api/drive-turn decides whether to add (structured augment), describe
+      // (read canvas back), silent (acknowledge no-op), or rearrange (stub).
+      // This replaces the previous always-augment pipeline that was minting
+      // duplicate blocks every turn regardless of what the user said.
+      const turnCtl = new AbortController()
+      const turnTimer = setTimeout(() => turnCtl.abort(), 25000) // hard cap
+      let turnData: any = {}
+      try {
+        const turnRes = await fetch("/api/drive-turn", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript, session_id: activeSessionId }),
+          signal: turnCtl.signal,
+        })
+        clearTimeout(turnTimer)
+        if (!turnRes.ok) {
+          const errTxt = await turnRes.text().catch(() => "")
+          throw new Error(`drive-turn ${turnRes.status}: ${errTxt.slice(0, 200)}`)
+        }
+        turnData = await turnRes.json().catch(() => ({}))
+      } catch (e: any) {
+        clearTimeout(turnTimer)
+        throw e
+      }
 
-      // Push undo entry so user can undo Drive Mode turns from the canvas.
-      if (res.mode === "structured") {
-        const newBlockIds: string[] = (res.new_blocks || []).map((b: any) => b.id)
-        const newConnIds: string[] = (res.new_connections || []).map((c: any) => c.id)
-        const snap = res.snapshot || {}
+      const action = String(turnData.action || "silent")
+      const reason = String(turnData.reason || "")
+      const augmentRes = turnData.augment_full
+      console.log(
+        `[drive] action=${action} reason="${reason}" elapsed=${turnData.elapsed_ms}ms`,
+      )
+
+      // For the "add" action, refresh canvas + push undo entry.
+      let diff: AugmentDiff = {
+        new_blocks: [],
+        new_connections: [],
+      }
+      if (action === "add" && augmentRes) {
+        const data = await api(`/api/sessions/${activeSessionId}`)
+        setBlocks(data.notes || [])
+        setConnections(data.connections || [])
+
+        const newBlockIds: string[] = (augmentRes.new_blocks || []).map((b: any) => b.id)
+        const newConnIds: string[] = (augmentRes.new_connections || []).map((c: any) => c.id)
+        const snap = augmentRes.snapshot || {}
         undoStackRef.current.push({
           kind: "augment-structured",
           deleted_notes: snap.deleted_notes || [],
@@ -1019,48 +1043,23 @@ export default function Page() {
           new_block_ids: newBlockIds,
           new_connection_ids: newConnIds,
         })
-      }
 
-      // Build the diff for the conversational responder + the offline fallback.
-      const diff: AugmentDiff = {
-        new_blocks: (res.new_blocks || []).map((b: any) => ({ id: b.id, text: b.text })),
-        new_connections: (res.new_connections || []).map((c: any) => ({
-          id: c.id, from: c.from_block_id, to: c.to_block_id,
-        })),
-        new_note_id: res.new_note?.id,
-        new_note_text: res.new_note?.text,
-      }
-
-      // Conversational rundown via fast cheap LLM (Gemini Flash on OpenRouter
-      // by default). Falls back to deterministic templated rundown if the
-      // /api/drive-respond endpoint errors or the model returns empty.
-      let rundown = ""
-      try {
-        const respCtl = new AbortController()
-        const respTimer = setTimeout(() => respCtl.abort(), 8000) // hard 8s cap
-        const respRes = await fetch("/api/drive-respond", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript, diff }),
-          signal: respCtl.signal,
-        })
-        clearTimeout(respTimer)
-        if (respRes.ok) {
-          const respData = await respRes.json().catch(() => ({}))
-          if (respData?.text) {
-            rundown = String(respData.text).trim()
-            console.log(`[drive] respond model=${respData.model} elapsed=${respData.elapsed_ms}ms`)
-          }
-        } else {
-          console.warn("[drive] /api/drive-respond non-ok:", respRes.status)
+        diff = {
+          new_blocks: (augmentRes.new_blocks || []).map((b: any) => ({ id: b.id, text: b.text })),
+          new_connections: (augmentRes.new_connections || []).map((c: any) => ({
+            id: c.id, from: c.from_block_id, to: c.to_block_id,
+          })),
+          new_note_id: augmentRes.new_note?.id,
+          new_note_text: augmentRes.new_note?.text,
         }
-      } catch (e: any) {
-        console.warn("[drive] /api/drive-respond failed:", e?.message)
       }
-      // Fallback if the LLM responder didn't work — never let the loop go silent.
-      if (!rundown) rundown = formatRundown(diff)
 
-      setDriveLastRundown(rundown)
+      // Server gave us spoken text already. If it's empty (LLM error), build
+      // a deterministic rundown from the diff so we never go silent.
+      let rundown = String(turnData.text || "").trim()
+      if (!rundown) rundown = action === "add" ? formatRundown(diff) : "Nothing to add."
+
+      setDriveLastRundown(`[${action}] ${rundown}`)
       setDriveTurnCount(c => c + 1)
 
       // TTS — Kokoro via /api/speak. If TTS fails, just go back to listening.
