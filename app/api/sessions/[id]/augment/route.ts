@@ -654,7 +654,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const scopeIds = selectedIds.length > 0 ? selectedIds : allNotes.map(n => n.id)
     const scopeSet = new Set(scopeIds)
     const scopeNotes = allNotes.filter(n => scopeSet.has(n.id))
-    if (scopeNotes.length === 0) return NextResponse.json({ error: "no blocks in scope" }, { status: 400 })
+    // Empty scope is OK for structured mode — it's purely additive (the user just
+    // wants new blocks created from the prompt, no existing source). Default and
+    // rearrange need at least one block to operate on.
+    if (scopeNotes.length === 0 && mode !== "structured") {
+      return NextResponse.json({ error: "no blocks in scope" }, { status: 400 })
+    }
 
     const settings = loadSettings()
 
@@ -774,9 +779,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       for (const n of deletableNotes) deleteNote(n.id)
 
       // Centroid for auto-layout fallback. Use the full scope (including drawings)
-      // so new blocks land in the visual middle of what the user selected.
-      const cx = scopeNotes.reduce((a, n) => a + n.x, 0) / scopeNotes.length
-      const cy = scopeNotes.reduce((a, n) => a + n.y, 0) / scopeNotes.length
+      // so new blocks land in the visual middle of what the user selected. For
+      // an empty canvas (Drive Mode first turn), fall back to a sensible spot.
+      const cx = scopeNotes.length > 0
+        ? scopeNotes.reduce((a, n) => a + n.x, 0) / scopeNotes.length
+        : 400
+      const cy = scopeNotes.length > 0
+        ? scopeNotes.reduce((a, n) => a + n.y, 0) / scopeNotes.length
+        : 200
 
       // Auto-layout: 4-col grid around centroid if no x/y given
       const cols = 4
