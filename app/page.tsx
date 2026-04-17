@@ -2382,26 +2382,9 @@ export default function Page() {
         } z-50 transition-all duration-200 ease-in-out overflow-hidden border-r border-border bg-black/95 md:bg-black/20 backdrop-blur-3xl flex flex-col h-full`}
       >
         <div className="w-[240px] flex flex-col h-full">
-          {/* Sidebar Header */}
-          <div className="flex h-10 items-center justify-between border-b border-border bg-card/5 backdrop-blur-md px-3 py-1.5 shrink-0">
-            <div className="flex items-center gap-2.5">
-              <div className="flex items-center gap-0.5">
-                <span className="inline-block h-2 w-2 rounded-sm bg-primary" />
-                <span className="inline-block h-2 w-2 rounded-sm bg-primary/60" />
-                <span className="inline-block h-2 w-2 rounded-sm bg-primary/30" />
-              </div>
-              <h2 className="font-mono text-xs font-bold uppercase tracking-tight text-foreground/80 select-none">
-                nodepad
-              </h2>
-            </div>
-            <button
-              data-testid="sidebar-close"
-              onClick={() => setSidebarOpen(false)}
-              className="p-2 hover:bg-white/5 rounded-sm transition-colors text-muted-foreground hover:text-foreground font-mono text-sm"
-            >
-              ‹
-            </button>
-          </div>
+          {/* NODEPAD brand header removed — the rooms pane doesn't have
+              one, so we drop it here for matching chrome. Collapse ‹
+              lives inside the NODES section header now. */}
 
           {/* Sidebar mode tabs — switch between canvas list and Matrix rooms.
               No route jump — both live in the same component, so canvas
@@ -2414,11 +2397,11 @@ export default function Page() {
             ]}
           />
 
-          {/* Section header — mirrors the "ROOMS · @ags_phone" header in
-              chat-view.tsx so the nodes pane and the rooms pane share the
-              same visual rhythm: same border, same paddings, same type
-              scale, same uppercase tracking. Right slot is the canvas
-              count instead of a user tag. */}
+          {/* Section header — mirrors the "ROOMS · @ags_phone · ‹" header
+              in chat-view.tsx so the nodes pane and the rooms pane share
+              the same visual rhythm: same border, same paddings, same type
+              scale, same uppercase tracking, same collapse chevron. Right
+              slots: canvas count + close button. */}
           <div className="shrink-0 border-b border-white/10 px-3 py-2 flex items-center gap-2">
             <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/55">
               Nodes
@@ -2426,6 +2409,14 @@ export default function Page() {
             <span className="ml-auto text-[10px] text-white/40">
               {sessions.length} {sessions.length === 1 ? "canvas" : "canvases"}
             </span>
+            <button
+              data-testid="sidebar-close"
+              onClick={() => setSidebarOpen(false)}
+              className="p-1 -my-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-white/5 font-mono text-sm transition-colors"
+              title="Hide sidebar"
+            >
+              ‹
+            </button>
           </div>
 
           {/* Session list — same SidebarListItem as the rooms pane with
