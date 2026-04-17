@@ -15,7 +15,7 @@ import { VoiceMicButton } from "@/components/ui/voice-mic-button"
 import { BlockEditTextarea } from "@/components/ui/block-edit-textarea"
 import { TextField } from "@/components/ui/text-field"
 import { NavTabs } from "@/components/ui/nav-tabs"
-import { DriveButton } from "@/components/ui/drive-button"
+import { DriveButton, SteeringWheelIcon } from "@/components/ui/drive-button"
 import { SidebarListItem } from "@/components/ui/sidebar-list-item"
 import { ToolbarPill } from "@/components/ui/toolbar-pill"
 import { CloseIcon, MicIcon, SpeakerIcon, SpinnerIcon } from "@/components/ui/icons"
@@ -2861,23 +2861,24 @@ export default function Page() {
                   {hasReportContext ? "Sends before/after PNG + state + your note" : "Sends current canvas PNG + state"}
                 </div>
                 <div className="flex gap-2">
-                  <button
+                  <ToolbarPill
+                    tone="ghost"
                     onClick={() => {
                       setReportOpen(false)
                       setReportNote("")
                     }}
-                    className="rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] transition-colors"
                   >
                     Cancel
-                  </button>
-                  <button
+                  </ToolbarPill>
+                  <ToolbarPill
                     data-testid="report-submit"
+                    tone="amber"
+                    size="wide"
                     disabled={reportBusy}
                     onClick={submitReport}
-                    className="rounded-sm bg-amber-500/80 hover:bg-amber-500 px-4 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-black disabled:opacity-30 transition-all active:scale-[0.98]"
                   >
                     {reportBusy ? "Sending..." : "Send"}
-                  </button>
+                  </ToolbarPill>
                 </div>
               </div>
             </div>
@@ -2914,15 +2915,9 @@ export default function Page() {
           >
             {/* Top bar — title + close */}
             <div className="w-full flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/85">
-                  <circle cx="12" cy="12" r="9" />
-                  <circle cx="12" cy="12" r="2.5" />
-                  <line x1="12" y1="2.5" x2="12" y2="9.5" />
-                  <line x1="3" y1="12" x2="9.5" y2="12" />
-                  <line x1="14.5" y1="12" x2="21" y2="12" />
-                </svg>
-                <span className="font-mono text-xs font-bold uppercase tracking-[0.25em] text-white/85">Drive Mode</span>
+              <div className="flex items-center gap-2 text-white/85">
+                <SteeringWheelIcon size={22} />
+                <span className="font-mono text-xs font-bold uppercase tracking-[0.25em]">Drive Mode</span>
               </div>
               <button
                 data-testid="drive-mode-close"
@@ -2930,10 +2925,7 @@ export default function Page() {
                 className="flex items-center justify-center h-11 w-11 rounded-sm border border-white/15 bg-white/[0.05] hover:bg-white/[0.1] text-white/85 transition-colors"
                 aria-label="Exit Drive Mode"
               >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
+                <CloseIcon size={20} />
               </button>
             </div>
 
@@ -2973,21 +2965,11 @@ export default function Page() {
                 )}
                 {/* Icon — mic for listen/idle, hourglass for thinking, waveform for speaking */}
                 {driveStatus === "thinking" ? (
-                  <svg className="animate-spin" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 12a9 9 0 1 1-6.2-8.55" />
-                  </svg>
+                  <SpinnerIcon size={56} className="text-white" />
                 ) : driveStatus === "speaking" ? (
-                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                  </svg>
+                  <SpeakerIcon size={64} className="text-white" />
                 ) : (
-                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="2" width="6" height="13" rx="3" />
-                    <path d="M5 11a7 7 0 0 0 14 0" />
-                    <line x1="12" y1="18" x2="12" y2="22" />
-                  </svg>
+                  <MicIcon size={64} className="text-white" />
                 )}
               </button>
               <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/40 text-center">
@@ -3126,25 +3108,26 @@ export default function Page() {
               <div className="flex items-center justify-between">
                 <div className="font-mono text-[10px] text-destructive">{augmentError}</div>
                 <div className="flex gap-2">
-                  <button
+                  <ToolbarPill
+                    tone="ghost"
                     onClick={() => {
                       setAugmentOpen(false)
                       setAugmentPrompt("")
                     }}
-                    className="rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] transition-colors"
                   >
                     Cancel
-                  </button>
-                  <button
+                  </ToolbarPill>
+                  <ToolbarPill
                     data-testid="augment-submit"
+                    tone="primary"
+                    size="wide"
                     disabled={augmentBusy || !augmentPrompt.trim() || (augmentRearrange && viewMode !== "canvas")}
                     onClick={submitAugment}
-                    className="rounded-sm bg-primary hover:bg-primary/90 px-4 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-primary-foreground disabled:opacity-30 transition-all active:scale-[0.98]"
                   >
                     {augmentBusy
                       ? (augmentRearrange ? "Rearranging..." : "Augmenting...")
                       : (augmentRearrange ? "Rearrange" : "Augment")}
-                  </button>
+                  </ToolbarPill>
                 </div>
               </div>
             </div>
@@ -3270,16 +3253,17 @@ export default function Page() {
             <div className="w-80 rounded-sm border border-white/10 bg-card/95 backdrop-blur-md p-4 shadow-xl">
               <p className="mb-4 font-mono text-sm text-foreground/80">{confirmState.message}</p>
               <div className="flex justify-end gap-2">
-                <button
-                  onClick={closeConfirm}
-                  className="rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] transition-colors"
-                >Cancel</button>
-                <button
+                <ToolbarPill tone="ghost" onClick={closeConfirm}>
+                  Cancel
+                </ToolbarPill>
+                <ToolbarPill
                   ref={confirmBtnRef}
                   autoFocus
+                  tone="danger"
                   onClick={() => { confirmState.onConfirm(); closeConfirm() }}
-                  className="rounded-sm bg-destructive/90 hover:bg-destructive px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white transition-all active:scale-[0.98]"
-                >Delete</button>
+                >
+                  Delete
+                </ToolbarPill>
               </div>
             </div>
           </div>

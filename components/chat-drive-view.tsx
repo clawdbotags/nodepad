@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
+import { CloseIcon, MicIcon, SpeakerIcon, SpinnerIcon } from "@/components/ui/icons"
 
 /**
  * Chat Drive Mode — voice-first agent chat for driving.
@@ -520,10 +521,7 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
             className="flex items-center justify-center h-11 w-11 rounded-sm border border-white/15 bg-white/[0.05] hover:bg-white/[0.1] text-white/85 transition-colors"
             aria-label="Exit Chat Drive"
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
+            <CloseIcon size={20} />
           </button>
         </div>
 
@@ -547,21 +545,11 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
               <span className="absolute inset-0 rounded-full bg-emerald-400/40 animate-ping" />
             )}
             {phase === "processing" || phase === "waiting" ? (
-              <svg className="animate-spin" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12a9 9 0 1 1-6.2-8.55" />
-              </svg>
+              <SpinnerIcon size={56} className="text-white" />
             ) : phase === "speaking" ? (
-              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-              </svg>
+              <SpeakerIcon size={64} className="text-white" />
             ) : (
-              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="9" y="2" width="6" height="13" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0" />
-                <line x1="12" y1="18" x2="12" y2="22" />
-              </svg>
+              <MicIcon size={64} className="text-white" />
             )}
           </button>
           <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/40 text-center max-w-[88vw]">

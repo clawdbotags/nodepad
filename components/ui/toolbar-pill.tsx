@@ -13,7 +13,7 @@
  *  - danger  : destructive-tinted solid                (confirm deletes)
  */
 
-import type { ButtonHTMLAttributes, ReactNode } from "react"
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react"
 
 export type ToolbarPillTone =
   | "primary"
@@ -47,22 +47,23 @@ const SIZES: Record<ToolbarPillSize, string> = {
   wide: "px-4 py-1.5",
 }
 
-export function ToolbarPill({
-  tone = "ghost",
-  size = "base",
-  className = "",
-  children,
-  ...rest
-}: {
+export type ToolbarPillProps = {
   tone?: ToolbarPillTone
   size?: ToolbarPillSize
   className?: string
   children: ReactNode
-} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className">) {
-  const cls = `rounded-sm ${SIZES[size]} font-mono text-[10px] font-bold uppercase tracking-wider transition-colors ${TONES[tone]} ${className}`
-  return (
-    <button className={cls} {...rest}>
-      {children}
-    </button>
-  )
-}
+} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className">
+
+export const ToolbarPill = forwardRef<HTMLButtonElement, ToolbarPillProps>(
+  function ToolbarPill(
+    { tone = "ghost", size = "base", className = "", children, ...rest },
+    ref,
+  ) {
+    const cls = `rounded-sm ${SIZES[size]} font-mono text-[10px] font-bold uppercase tracking-wider transition-colors ${TONES[tone]} ${className}`
+    return (
+      <button ref={ref} className={cls} {...rest}>
+        {children}
+      </button>
+    )
+  },
+)

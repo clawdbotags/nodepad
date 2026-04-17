@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { ToolbarPill } from "@/components/ui/toolbar-pill"
 import "@excalidraw/excalidraw/index.css"
 
 // Excalidraw uses window APIs at module load — must be client-only.
@@ -95,14 +96,15 @@ export function ExcalidrawOverlay({ initialScene, onSave, onClose }: {
         <div className="font-mono text-[10px] font-bold uppercase tracking-[0.25em] text-white/60">
           drawing — sketch · ⎋ or ✕ to save & close
         </div>
-        <button
+        <ToolbarPill
           data-testid="excalidraw-close"
           onClick={handleClose}
-          className="rounded-sm px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white/70 hover:bg-white/10 transition-colors"
+          tone="ghost"
+          size="sm"
           title="Save & close"
         >
           ✕
-        </button>
+        </ToolbarPill>
       </div>
       <div className="flex-1 min-h-0 relative" data-overlay-bg="false">
         {mounted && (
