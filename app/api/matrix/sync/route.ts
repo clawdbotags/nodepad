@@ -82,7 +82,13 @@ export async function GET(request: Request) {
       const last = messages[messages.length - 1]
       rooms.push({
         id,
-        name: name || id,
+        // Empty string when no m.room.name appeared in this sync delta.
+        // DO NOT fall back to the room id — incremental syncs return no
+        // state.events, so `name` would be undefined here and every
+        // subsequent /sync would stomp the existing client-side name
+        // with the raw !xxx:server room id. The client merges
+        // `r.name || existing.name || r.id` so a good name sticks.
+        name: name || "",
         topic,
         lastMessage: last ? { sender: last.sender, body: last.body, ts: last.ts } : null,
         unread: raw?.unread_notifications?.notification_count || 0,

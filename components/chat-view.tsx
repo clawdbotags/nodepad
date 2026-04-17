@@ -137,7 +137,10 @@ export function ChatView({
             ]
             map.set(r.id, {
               ...existing,
-              name: r.name || existing.name,
+              // Prefer the delta's name only if it's truthy (non-empty).
+              // Incremental syncs legitimately have no m.room.name state
+              // and return "" so we don't clobber the display name.
+              name: r.name || existing.name || r.id,
               topic: r.topic ?? existing.topic,
               lastMessage: r.lastMessage || existing.lastMessage,
               unread: r.unread,
@@ -145,7 +148,9 @@ export function ChatView({
               prevBatch: existing.prevBatch || r.prevBatch,
             })
           } else {
-            map.set(r.id, r)
+            // Brand-new room entering the sync — if the name is still
+            // empty (brand-new unnamed room), use the id as last resort.
+            map.set(r.id, { ...r, name: r.name || r.id })
           }
         }
         return Array.from(map.values()).sort(
