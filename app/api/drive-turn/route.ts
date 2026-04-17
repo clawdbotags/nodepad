@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { headers } from "next/headers"
-import { getSettings, getSession, listNotes, listConnections } from "@/lib/server/db"
+import { getSettings, getSession, listNotes, listConnections, deleteNote } from "@/lib/server/db"
 import { decrypt, isSensitiveKey } from "@/lib/server/crypto"
 
 // POST /api/drive-turn
@@ -31,12 +31,17 @@ const FAST_MODEL = "google/gemini-2.5-flash-lite"
 const MAX_BLOCKS_IN_PROMPT = 40 // beyond this, summarize
 const MAX_BLOCK_TEXT = 200
 
-type Intent = "add" | "describe" | "silent" | "rearrange"
+type Intent = "add" | "describe" | "silent" | "rearrange" | "delete"
 
 const CLASSIFIER_SYSTEM_PROMPT = `You decide what a voice user wants from their thinking canvas. They speak; you pick ONE action.
 
 Output: one JSON object, nothing else:
-{ "action": "add" | "describe" | "silent" | "rearrange", "reason": "<one short sentence>" }
+{
+  "action": "add" | "describe" | "silent" | "rearrange" | "delete",
+  "reason": "<one short sentence>",
+  "delete_all": <true if and only if action="delete" and they want to wipe everything; omit otherwise>,
+  "target_block_ids": <array of EXACT block id strings to delete; only present when action="delete" and delete_all is false>
+}
 
 Rules:
 
@@ -51,10 +56,16 @@ Rules:
   Examples: "rearrange these as a timeline", "cluster by topic", "move the X block over there".
   If unsure, do NOT pick rearrange — voice rearrange is brittle. Default to "silent" or "add".
 
+"delete" — they explicitly want blocks REMOVED from the canvas.
+  Examples: "delete that caffeine block", "remove the screen-time one", "wipe everything", "delete all notes", "clear the canvas", "start over", "get rid of the wind-down block".
+  If they say "all"/"everything"/"clear"/"wipe"/"start over" → set delete_all=true and omit target_block_ids.
+  Otherwise pick the EXACT block id strings (the [id:xxxxxxxx] prefix in the canvas listing) of the blocks they want gone, and put them in target_block_ids. Use the full id string from the listing, not a paraphrase.
+  If you cannot identify which specific blocks they mean and they didn't say "all", default to "silent" — better to do nothing than delete the wrong block.
+
 "silent" — they're thinking aloud, acknowledging, repeating themselves, mumbling, or saying something the canvas already covers.
   Examples: "hmm", "okay", "yeah", "interesting", "right", filler, vague nonspecific musing, anything that's already on the canvas.
 
-When in doubt between "add" and "silent", prefer "silent". Cluttering the canvas is worse than missing one.`
+When in doubt between "add" and "silent", prefer "silent". When in doubt between "delete" and "silent" with no clear target, prefer "silent". Cluttering or wrongly deleting is worse than doing nothing.`
 
 const RESPONDER_SYSTEM_PROMPT = `You are the spoken voice partner of someone driving while brainstorming on a thinking canvas. They speak; the canvas does something (or doesn't); you respond, briefly, like a peer riding shotgun.
 
@@ -74,6 +85,8 @@ action="describe" — read the canvas back to them. Group similar blocks; don't 
 action="silent" — brief honest acknowledgment that nothing changed. Don't pretend. Examples: "Already covered." / "Just noted, nothing new." / "Same ground." Pick whatever fits in <12 words.
 
 action="rearrange" — voice rearrange isn't wired yet. Say so plainly: "Rearrange isn't on voice yet — open the canvas to do it."
+
+action="delete" — confirm the deletion in one short beat. State WHAT got removed and HOW MANY. Don't list ids. Don't pad. Examples: "Cleared all 4 blocks." / "Removed the caffeine one." / "Two screen-related blocks gone." If 0 were deleted (nothing matched), say so: "Nothing matched — try naming it more specifically."
 
 You will receive: the user's transcript + a summary of canvas state + (for add) the diff. Respond per the rules above.`
 
@@ -101,13 +114,13 @@ function summarizeCanvas(notes: any[], connections: any[]): string {
   const lines: string[] = []
   if (notes.length <= MAX_BLOCKS_IN_PROMPT) {
     for (const n of notes) {
-      lines.push(`- ${snippet(n.text, MAX_BLOCK_TEXT)}`)
+      lines.push(`- [id:${n.id}] ${snippet(n.text, MAX_BLOCK_TEXT)}`)
     }
   } else {
     // Too many — sample first 30 + last 10
-    for (const n of notes.slice(0, 30)) lines.push(`- ${snippet(n.text, 120)}`)
+    for (const n of notes.slice(0, 30)) lines.push(`- [id:${n.id}] ${snippet(n.text, 120)}`)
     lines.push(`... (${notes.length - 40} more blocks omitted)`)
-    for (const n of notes.slice(-10)) lines.push(`- ${snippet(n.text, 120)}`)
+    for (const n of notes.slice(-10)) lines.push(`- [id:${n.id}] ${snippet(n.text, 120)}`)
   }
   if (connections.length) {
     lines.push("")
@@ -153,21 +166,36 @@ async function callOR(
   return String(data?.choices?.[0]?.message?.content || "").trim()
 }
 
-function classifyIntent(raw: string): { action: Intent; reason: string } {
+type Classification = {
+  action: Intent
+  reason: string
+  delete_all?: boolean
+  target_block_ids?: string[]
+}
+
+function classifyIntent(raw: string): Classification {
   // Try to parse model output as JSON. If it failed JSON mode (some models
   // wrap in fences), strip and retry.
   const cleaned = raw.replace(/^```json\s*|^```\s*|\s*```$/g, "").trim()
   try {
     const obj = JSON.parse(cleaned)
     let action = String(obj.action || "silent").toLowerCase() as Intent
-    if (!["add", "describe", "silent", "rearrange"].includes(action)) action = "silent"
-    return { action, reason: String(obj.reason || "") }
+    if (!["add", "describe", "silent", "rearrange", "delete"].includes(action)) action = "silent"
+    const out: Classification = { action, reason: String(obj.reason || "") }
+    if (action === "delete") {
+      out.delete_all = !!obj.delete_all
+      if (Array.isArray(obj.target_block_ids)) {
+        out.target_block_ids = obj.target_block_ids.map((s: any) => String(s)).filter(Boolean)
+      }
+    }
+    return out
   } catch {
     // Heuristic fallback if model returned prose
     const lower = cleaned.toLowerCase()
     if (lower.startsWith("describe") || lower.includes("\"describe\"")) return { action: "describe", reason: "fallback parse" }
     if (lower.startsWith("add") || lower.includes("\"add\"")) return { action: "add", reason: "fallback parse" }
     if (lower.includes("\"rearrange\"")) return { action: "rearrange", reason: "fallback parse" }
+    if (lower.includes("\"delete\"")) return { action: "silent", reason: "fallback parse — delete unsafe without IDs" }
     return { action: "silent", reason: "fallback parse — could not classify" }
   }
 }
@@ -210,9 +238,9 @@ export async function POST(req: Request) {
     const classifyUser =
       `User said: "${transcript}"\n\n` +
       `Current canvas (${notes.length} block${notes.length === 1 ? "" : "s"}):\n${canvasSummary}`
-    let classification: { action: Intent; reason: string }
+    let classification: Classification
     try {
-      const raw = await callOR(apiKey, baseUrl, FAST_MODEL, CLASSIFIER_SYSTEM_PROMPT, classifyUser, true, 100)
+      const raw = await callOR(apiKey, baseUrl, FAST_MODEL, CLASSIFIER_SYSTEM_PROMPT, classifyUser, true, 200)
       classification = classifyIntent(raw)
     } catch (e: any) {
       console.warn("[drive-turn] classify failed:", e?.message)
@@ -221,6 +249,10 @@ export async function POST(req: Request) {
 
     let diff: any = undefined
     let augmentRes: any = undefined
+    // For delete: a snapshot the client can use to undo (same shape as
+    // augment-structured undo entries — deleted_notes + deleted_connections).
+    let deleteSnapshot: { deleted_notes: any[]; deleted_connections: any[] } | undefined
+    let deletedCount = 0
 
     // ── Step 2: dispatch ──────────────────────────────────────────────────
     if (classification.action === "add") {
@@ -271,6 +303,43 @@ export async function POST(req: Request) {
           elapsed_ms: Date.now() - t0,
         })
       }
+    } else if (classification.action === "delete") {
+      // Resolve which blocks to delete. Either delete_all (every block in the
+      // session) or the specific target_block_ids the classifier picked.
+      const validIdSet = new Set(notes.map((n: any) => n.id))
+      let targets: any[] = []
+      if (classification.delete_all) {
+        targets = notes
+      } else if (classification.target_block_ids?.length) {
+        const wanted = new Set(classification.target_block_ids.filter(id => validIdSet.has(id)))
+        targets = notes.filter((n: any) => wanted.has(n.id))
+      }
+
+      if (!targets.length) {
+        // Classifier picked delete but couldn't resolve any block → degrade
+        // gracefully to a "nothing matched" response. Don't silently no-op.
+        deleteSnapshot = { deleted_notes: [], deleted_connections: [] }
+      } else {
+        // Snapshot before delete so the client can undo. Connections affected
+        // are those touching ANY target id.
+        const targetIds = new Set(targets.map((n: any) => n.id))
+        const affectedConns = connections.filter(
+          (c: any) => targetIds.has(c.from_block_id) || targetIds.has(c.to_block_id),
+        )
+        deleteSnapshot = {
+          // Send full row shape so client undo can restore exactly.
+          deleted_notes: targets.map((n: any) => ({ ...n })),
+          deleted_connections: affectedConns.map((c: any) => ({ ...c })),
+        }
+        // deleteNote() also cascades-deletes connections involving the note,
+        // so we don't have to delete connections separately.
+        for (const n of targets) {
+          try { deleteNote(n.id) } catch (e: any) {
+            console.warn(`[drive-turn] deleteNote(${n.id}) failed:`, e?.message)
+          }
+        }
+        deletedCount = targets.length
+      }
     }
 
     // ── Step 3: generate spoken response ──────────────────────────────────
@@ -293,6 +362,17 @@ export async function POST(req: Request) {
         `User wants to rearrange the layout.\n` +
         `Action: rearrange (not yet supported via voice)\n` +
         `Canvas: ${notes.length} blocks.`
+    } else if (classification.action === "delete") {
+      const removedTexts = (deleteSnapshot?.deleted_notes || [])
+        .slice(0, 6)
+        .map((n: any) => snippet(n.text, 80))
+      responderUser =
+        `User said: "${transcript}"\n` +
+        `Action: delete\n` +
+        `Removed ${deletedCount} block${deletedCount === 1 ? "" : "s"} (${classification.delete_all ? "wipe-all request" : "specific targets"}).\n` +
+        (removedTexts.length
+          ? `What got removed:\n${removedTexts.map(t => `  - ${t}`).join("\n")}`
+          : "Nothing matched the request.")
     } else {
       // silent
       responderUser =
@@ -319,6 +399,10 @@ export async function POST(req: Request) {
           : "Nothing new took hold."
       } else if (classification.action === "describe") {
         text = `${notes.length} block${notes.length === 1 ? "" : "s"} on the canvas.`
+      } else if (classification.action === "delete") {
+        text = deletedCount
+          ? `Removed ${deletedCount} block${deletedCount === 1 ? "" : "s"}.`
+          : "Nothing matched — try naming it more specifically."
       } else {
         text = "Nothing to add."
       }
@@ -330,6 +414,8 @@ export async function POST(req: Request) {
       text,
       diff,
       augment_full: augmentRes, // so client can extract snapshot for undo
+      delete_snapshot: deleteSnapshot, // for client undo of delete actions
+      deleted_count: deletedCount,
       models: { classifier: FAST_MODEL, responder: FAST_MODEL },
       elapsed_ms: Date.now() - t0,
     })

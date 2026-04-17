@@ -1052,6 +1052,24 @@ export default function Page() {
           new_note_id: augmentRes.new_note?.id,
           new_note_text: augmentRes.new_note?.text,
         }
+      } else if (action === "delete") {
+        // Refresh canvas to reflect server-side deletes. Push an undo entry
+        // that restores the deleted notes + their connections via the same
+        // augment-structured pathway (no new blocks, just resurrected ones).
+        const data = await api(`/api/sessions/${activeSessionId}`)
+        setBlocks(data.notes || [])
+        setConnections(data.connections || [])
+
+        const ds = turnData.delete_snapshot || {}
+        if ((ds.deleted_notes?.length || 0) > 0 || (ds.deleted_connections?.length || 0) > 0) {
+          undoStackRef.current.push({
+            kind: "augment-structured",
+            deleted_notes: ds.deleted_notes || [],
+            deleted_connections: ds.deleted_connections || [],
+            new_block_ids: [],
+            new_connection_ids: [],
+          })
+        }
       }
 
       // Server gave us spoken text already. If it's empty (LLM error), build
