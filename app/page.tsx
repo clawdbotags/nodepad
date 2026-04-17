@@ -16,6 +16,9 @@ import { BlockEditTextarea } from "@/components/ui/block-edit-textarea"
 import { TextField } from "@/components/ui/text-field"
 import { NavTabs } from "@/components/ui/nav-tabs"
 import { DriveButton } from "@/components/ui/drive-button"
+import { SidebarListItem } from "@/components/ui/sidebar-list-item"
+import { ToolbarPill } from "@/components/ui/toolbar-pill"
+import { CloseIcon, MicIcon, SpeakerIcon, SpinnerIcon } from "@/components/ui/icons"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -2385,38 +2388,18 @@ export default function Page() {
           />
 
           {/* Session list */}
-          <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto custom-scrollbar">
             {sessions.map(s => (
-              <div
+              <SidebarListItem
                 key={s.id}
-                className={`group relative rounded-sm transition-all duration-150 ${
-                  s.id === activeSessionId
-                    ? "bg-primary/10 shadow-[inset_0_1px_0px_rgba(255,255,255,0.05)]"
-                    : "hover:bg-white/5"
-                }`}
-              >
-                <div className="flex items-center p-2 px-2.5">
-                  <button
-                    data-testid={`session-item-${s.id}`}
-                    onClick={() => setActiveSessionId(s.id)}
-                    className="flex-1 text-left overflow-hidden"
-                  >
-                    <span className={`font-mono text-[12px] font-bold truncate block ${
-                      s.id === activeSessionId ? "text-primary" : "text-foreground/80 group-hover:text-foreground"
-                    }`}>
-                      {s.name}
-                    </span>
-                  </button>
-                  <button
-                    data-testid={`session-delete-${s.id}`}
-                    onClick={e => { e.stopPropagation(); deleteSession(s.id) }}
-                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/20 rounded-sm text-muted-foreground hover:text-destructive transition-all"
-                    title="Delete canvas"
-                  >
-                    <span className="text-xs">×</span>
-                  </button>
-                </div>
-              </div>
+                testId={`session-item-${s.id}`}
+                deleteTestId={`session-delete-${s.id}`}
+                active={s.id === activeSessionId}
+                onClick={() => setActiveSessionId(s.id)}
+                onDelete={() => deleteSession(s.id)}
+                deleteLabel="Delete canvas"
+                label={s.name}
+              />
             ))}
           </div>
 

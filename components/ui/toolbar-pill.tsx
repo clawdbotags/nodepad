@@ -35,17 +35,31 @@ const TONES: Record<ToolbarPillTone, string> = {
     "bg-destructive/90 hover:bg-destructive text-white disabled:opacity-30 active:scale-[0.98]",
 }
 
+/** Padding scale. `base` = px-3 py-1.5 (the nodepad default, covers almost
+ *  every site). `sm` = px-2 py-1 (used by the zoom-toolbar reset and a few
+ *  other compact surfaces). `wide` = px-4 py-1.5 (primary CTAs that need
+ *  more horizontal weight — Augment Submit, Report Send). */
+export type ToolbarPillSize = "sm" | "base" | "wide"
+
+const SIZES: Record<ToolbarPillSize, string> = {
+  sm: "px-2 py-1",
+  base: "px-3 py-1.5",
+  wide: "px-4 py-1.5",
+}
+
 export function ToolbarPill({
   tone = "ghost",
+  size = "base",
   className = "",
   children,
   ...rest
 }: {
   tone?: ToolbarPillTone
+  size?: ToolbarPillSize
   className?: string
   children: ReactNode
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className">) {
-  const cls = `rounded-sm px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors ${TONES[tone]} ${className}`
+  const cls = `rounded-sm ${SIZES[size]} font-mono text-[10px] font-bold uppercase tracking-wider transition-colors ${TONES[tone]} ${className}`
   return (
     <button className={cls} {...rest}>
       {children}
