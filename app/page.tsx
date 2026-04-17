@@ -11,6 +11,7 @@ import {
   type ExcalidrawScene,
 } from "@/components/excalidraw-overlay"
 import { AILogPanel } from "@/components/ai-log-panel"
+import { ChatView } from "@/components/chat-view"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -637,7 +638,7 @@ function GraphView({ blocks, connections, selectedIds, onSelect }: {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-type ViewMode = "canvas" | "tiled" | "graph"
+type ViewMode = "canvas" | "tiled" | "graph" | "chat"
 
 export default function Page() {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -2506,7 +2507,7 @@ export default function Page() {
             className="shrink-0 flex items-center gap-2 px-2 pl-12 pr-2 py-1.5 border-b border-white/10 bg-black/70 backdrop-blur-md"
           >
             <div data-testid="view-toggle" className="flex items-center gap-1 rounded-sm border border-white/10 bg-black/40 px-1 py-1">
-              {(["tiled", "graph"] as ViewMode[]).map(m => (
+              {(["tiled", "graph", "chat"] as ViewMode[]).map(m => (
                 <button
                   key={m}
                   onClick={() => setViewMode(m)}
@@ -2531,7 +2532,7 @@ export default function Page() {
             unusable on phones; mobile users get tiled + graph in top bar). */}
         {!isMobile && (
           <div data-testid="view-toggle" className="absolute left-3 bottom-3 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
-            {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
+            {(["canvas", "tiled", "graph", "chat"] as ViewMode[]).map(m => (
               <button
                 key={m}
                 onClick={() => setViewMode(m)}
@@ -2546,6 +2547,9 @@ export default function Page() {
             ))}
           </div>
         )}
+
+        {/* Chat view — talk to all agents via Matrix inside the app. */}
+        {viewMode === "chat" && <ChatView isMobile={isMobile} />}
 
         {/* Tiled view */}
         {viewMode === "tiled" && (
