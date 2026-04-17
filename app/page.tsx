@@ -11,8 +11,6 @@ import {
   type ExcalidrawScene,
 } from "@/components/excalidraw-overlay"
 import { AILogPanel } from "@/components/ai-log-panel"
-import { ChatView } from "@/components/chat-view"
-import { ChatDriveView } from "@/components/chat-drive-view"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -639,7 +637,7 @@ function GraphView({ blocks, connections, selectedIds, onSelect }: {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-type ViewMode = "canvas" | "tiled" | "graph" | "chat"
+type ViewMode = "canvas" | "tiled" | "graph"
 
 export default function Page() {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -922,13 +920,8 @@ export default function Page() {
   // The "speaking" voice is Kokoro (self-hosted), the words are templated
   // from the actual augment diff — no LLM in the response loop.
   const [driveOpen, setDriveOpen] = useState(false)
-  // Chat Drive session — a separate voice-first overlay for agent chat.
-  // Opened from ChatView's "Drive" button. Unlike canvas Drive Mode this
-  // releases the audio session between turns so music keeps playing while
-  // the agent processes.
-  const [chatDriveSession, setChatDriveSession] = useState<
-    { roomId: string; roomName: string; me: string | null } | null
-  >(null)
+  // Chat lives at its own top-level route (/chat) — deliberately separate
+  // from the canvas so you don't have to pick a note to talk to agents.
   type DriveStatus = "idle" | "listening" | "thinking" | "speaking" | "error"
   const [driveStatus, setDriveStatus] = useState<DriveStatus>("idle")
   const [driveLastRundown, setDriveLastRundown] = useState<string>("")
@@ -2515,7 +2508,7 @@ export default function Page() {
             className="shrink-0 flex items-center gap-2 px-2 pl-12 pr-2 py-1.5 border-b border-white/10 bg-black/70 backdrop-blur-md"
           >
             <div data-testid="view-toggle" className="flex items-center gap-1 rounded-sm border border-white/10 bg-black/40 px-1 py-1">
-              {(["tiled", "graph", "chat"] as ViewMode[]).map(m => (
+              {(["tiled", "graph"] as ViewMode[]).map(m => (
                 <button
                   key={m}
                   onClick={() => setViewMode(m)}
@@ -2529,6 +2522,12 @@ export default function Page() {
                 </button>
               ))}
             </div>
+            <a
+              href="/chat"
+              className="rounded-sm border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-white/70 hover:border-primary/40 hover:text-primary transition-all"
+            >
+              Chat →
+            </a>
             <div className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 truncate max-w-[120px]">
               {sessions.find(s => s.id === activeSessionId)?.name || ""}
             </div>
@@ -2540,7 +2539,7 @@ export default function Page() {
             unusable on phones; mobile users get tiled + graph in top bar). */}
         {!isMobile && (
           <div data-testid="view-toggle" className="absolute left-3 bottom-3 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
-            {(["canvas", "tiled", "graph", "chat"] as ViewMode[]).map(m => (
+            {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
               <button
                 key={m}
                 onClick={() => setViewMode(m)}
@@ -2553,17 +2552,14 @@ export default function Page() {
                 {m}
               </button>
             ))}
+            <div className="mx-1 h-5 w-px bg-white/15" />
+            <a
+              href="/chat"
+              className="rounded-sm px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] hover:text-primary transition-all border border-transparent hover:border-primary/35"
+            >
+              Chat →
+            </a>
           </div>
-        )}
-
-        {/* Chat view — talk to all agents via Matrix inside the app. */}
-        {viewMode === "chat" && (
-          <ChatView
-            isMobile={isMobile}
-            onStartDrive={(roomId, roomName, me) =>
-              setChatDriveSession({ roomId, roomName, me })
-            }
-          />
         )}
 
         {/* Tiled view */}
@@ -2943,19 +2939,6 @@ export default function Page() {
           aria-hidden="true"
           style={{ display: "none" }}
         />
-        {/* Chat Drive — voice-first agent chat overlay, opened from chat view's
-            "Drive" button. Mounts over everything; music keeps playing on the
-            car between turns because we release the audio session after each
-            recording instead of holding a persistent silent loop. */}
-        {chatDriveSession && (
-          <ChatDriveView
-            roomId={chatDriveSession.roomId}
-            roomName={chatDriveSession.roomName}
-            me={chatDriveSession.me}
-            onClose={() => setChatDriveSession(null)}
-          />
-        )}
-
         {driveOpen && (
           <div
             data-testid="drive-mode-overlay"
