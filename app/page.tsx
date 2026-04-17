@@ -2379,7 +2379,7 @@ export default function Page() {
         }
         className={`${
           isMobile ? "fixed inset-y-0 left-0" : "relative"
-        } z-50 transition-all duration-200 ease-in-out overflow-hidden border-r border-border bg-black/95 md:bg-black/20 backdrop-blur-3xl flex flex-col h-full`}
+        } z-50 overflow-hidden border-r border-border bg-black/95 md:bg-black/20 backdrop-blur-3xl flex flex-col h-full`}
       >
         <div className="w-[240px] flex flex-col h-full">
           {/* NODEPAD brand header removed — the rooms pane doesn't have
