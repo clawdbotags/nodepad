@@ -2354,20 +2354,26 @@ export default function Page() {
 
   return (
     <div className="relative flex w-full overflow-hidden bg-[#020202] text-foreground" style={{ height: "var(--app-height, 100dvh)" }}>
-      {/* Mobile sidebar backdrop — taps outside the drawer close it */}
-      {isMobile && sidebarOpen && (
+      {/* Mobile sidebar backdrop — taps outside the drawer close it.
+          Suppressed in Rooms mode: ChatView becomes the whole surface and
+          the canvas sidebar gets out of the way (see effectiveSidebarOpen). */}
+      {isMobile && sidebarOpen && sidebarMode === "nodes" && (
         <div
           data-testid="sidebar-backdrop"
           onClick={() => setSidebarOpen(false)}
           className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
         />
       )}
-      {/* Left Sidebar — fixed overlay drawer on mobile, inline on desktop */}
+      {/* Left Sidebar — fixed overlay drawer on mobile, inline on desktop.
+          In Rooms mode the canvas sidebar collapses (width 0) so it
+          doesn't cover ChatView's z-40 overlay. ChatView has its own
+          Nodes|Rooms tab toggle, so the user still has a way back. */}
       <aside
         style={
-          isMobile
-            ? { width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }
-            : { width: sidebarOpen ? 240 : 0, opacity: sidebarOpen ? 1 : 0, visibility: sidebarOpen ? "visible" : "hidden" }
+          (() => {
+            const open = sidebarOpen && sidebarMode === "nodes"
+            return { width: open ? 240 : 0, opacity: open ? 1 : 0, visibility: open ? "visible" : "hidden" }
+          })()
         }
         className={`${
           isMobile ? "fixed inset-y-0 left-0" : "relative"
@@ -2487,8 +2493,10 @@ export default function Page() {
       </aside>
 
       {/* Sidebar open button (visible when collapsed). Bigger tap target on
-          mobile so it sits comfortably in the top bar's left padding slot. */}
-      {!sidebarOpen && (
+          mobile so it sits comfortably in the top bar's left padding slot.
+          Hidden in Rooms mode — ChatView owns the left pane there and has
+          its own Nodes|Rooms tab toggle. */}
+      {!sidebarOpen && sidebarMode === "nodes" && (
         <button
           data-testid="sidebar-toggle"
           onClick={() => setSidebarOpen(true)}
