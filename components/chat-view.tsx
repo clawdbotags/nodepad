@@ -306,7 +306,7 @@ export function ChatView({
   const showList = isMobile ? !activeRoomId : true
 
   return (
-    <div className="absolute inset-0 flex bg-black text-white/90 font-mono text-sm">
+    <div className="absolute inset-0 flex bg-black text-white/90 text-sm">
       {/* Room list pane */}
       {showList && (
         <div
