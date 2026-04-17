@@ -11,6 +11,8 @@ import {
   type ExcalidrawScene,
 } from "@/components/excalidraw-overlay"
 import { AILogPanel } from "@/components/ai-log-panel"
+import { VoiceMicButton } from "@/components/ui/voice-mic-button"
+import { BlockEditTextarea } from "@/components/ui/block-edit-textarea"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -311,23 +313,15 @@ function TiledView({ blocks, connections, selectedIds, onSelect,
             ) : (
               <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
                 {isEditing ? (
-                  <textarea
-                    data-testid={`tile-edit-${b.id}`}
-                    autoFocus
+                  <BlockEditTextarea
+                    testId={`tile-edit-${b.id}`}
                     value={editingText}
-                    onChange={e => onChangeEdit(e.target.value)}
-                    onBlur={onSaveEdit}
+                    onChange={onChangeEdit}
+                    onSave={onSaveEdit}
+                    onCancel={onCancelEdit}
+                    shortcut="cmd-enter"
                     onClick={e => e.stopPropagation()}
                     onMouseDown={e => e.stopPropagation()}
-                    onKeyDown={e => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault()
-                        onSaveEdit()
-                      } else if (e.key === "Escape") {
-                        e.preventDefault()
-                        onCancelEdit()
-                      }
-                    }}
                     className="w-full h-full min-h-[80px] resize-none bg-transparent outline-none text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap break-words"
                   />
                 ) : (
@@ -412,20 +406,14 @@ function TiledView({ blocks, connections, selectedIds, onSelect,
                 ) : (
                   <div className="px-3 py-3">
                     {isEditing ? (
-                      <textarea
-                        data-testid={`tile-edit-${b.id}`}
-                        autoFocus
+                      <BlockEditTextarea
+                        testId={`tile-edit-${b.id}`}
                         value={editingText}
-                        onChange={e => onChangeEdit(e.target.value)}
-                        onBlur={onSaveEdit}
+                        onChange={onChangeEdit}
+                        onSave={onSaveEdit}
+                        onCancel={onCancelEdit}
+                        shortcut="cmd-enter"
                         onClick={e => e.stopPropagation()}
-                        onKeyDown={e => {
-                          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                            e.preventDefault(); onSaveEdit()
-                          } else if (e.key === "Escape") {
-                            e.preventDefault(); onCancelEdit()
-                          }
-                        }}
                         className="w-full min-h-[80px] resize-y bg-transparent outline-none text-[15px] text-foreground/90 leading-relaxed whitespace-pre-wrap break-words"
                       />
                     ) : (
@@ -2762,18 +2750,12 @@ export default function Page() {
                 {isDrawing ? (
                   <DrawingPreview scene={parseScene(b.text)} className="bg-white/[0.02]" />
                 ) : isEditing ? (
-                  <textarea
-                    data-testid={`block-edit-${b.id}`}
-                    autoFocus
+                  <BlockEditTextarea
+                    testId={`block-edit-${b.id}`}
                     value={editingText}
-                    onChange={e => setEditingText(e.target.value)}
-                    onBlur={saveEdit}
-                    onKeyDown={e => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault()
-                        saveEdit()
-                      }
-                    }}
+                    onChange={setEditingText}
+                    onSave={saveEdit}
+                    shortcut="enter"
                     className="w-full h-full min-h-[56px] resize-none bg-transparent outline-none text-foreground font-mono text-sm"
                     style={{ height: b.height && b.height > 40 ? b.height - 16 : undefined }}
                   />
@@ -3122,35 +3104,14 @@ export default function Page() {
                     : "Instruction (e.g. reformat as checklist)"}
                   className="flex-1 min-w-0 rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-primary/50 transition-colors"
                 />
-                <button
-                  type="button"
-                  data-testid="augment-voice-btn"
-                  onClick={augmentVoice.toggle}
+                <VoiceMicButton
+                  testId="augment-voice-btn"
+                  variant="augment"
+                  recording={augmentVoice.recording}
+                  transcribing={augmentVoice.transcribing}
+                  onToggle={augmentVoice.toggle}
                   disabled={augmentBusy || augmentVoice.transcribing}
-                  aria-pressed={augmentVoice.recording}
-                  aria-label={augmentVoice.recording ? "Stop recording" : "Dictate prompt"}
-                  title={augmentVoice.recording ? "Stop & transcribe" : "Dictate prompt"}
-                  className={`relative shrink-0 inline-flex items-center justify-center rounded-sm border px-3 transition-colors disabled:opacity-40 ${
-                    augmentVoice.recording
-                      ? "border-red-500/40 bg-red-500/10 text-red-300"
-                      : augmentVoice.transcribing
-                      ? "border-primary/40 bg-primary/10 text-primary animate-pulse"
-                      : "border-white/10 bg-white/[0.04] text-white/55 hover:bg-white/[0.08] hover:text-white/80"
-                  }`}
-                >
-                  {augmentVoice.recording ? (
-                    <span className="relative flex h-3 w-3">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-                      <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500" />
-                    </span>
-                  ) : (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="9" y="3" width="6" height="12" rx="3" />
-                      <path d="M5 11a7 7 0 0 0 14 0" />
-                      <line x1="12" y1="18" x2="12" y2="22" />
-                    </svg>
-                  )}
-                </button>
+                />
               </div>
               <label className="flex items-center gap-2 font-mono text-[10px] text-white/55 cursor-pointer select-none">
                 <input
@@ -3262,36 +3223,15 @@ export default function Page() {
                 icon-only so they read as utilities, not actions. Bigger tap
                 targets on mobile (h-11 = 44px Apple HIG minimum). */}
             <div className="flex items-center rounded-sm border border-white/10 bg-white/[0.03]">
-              <button
-                data-testid="voice-input-btn"
-                onClick={toggleRecording}
+              <VoiceMicButton
+                testId="voice-input-btn"
+                variant="entry"
+                recording={recording}
+                transcribing={transcribing}
+                onToggle={toggleRecording}
                 disabled={transcribing || !activeSessionId}
-                title={recording ? "Stop & transcribe" : (transcribing ? "Transcribing…" : "Voice input")}
-                aria-pressed={recording}
-                aria-label="Voice input"
-                className={`flex items-center justify-center transition-colors ${
-                  isMobile ? "h-11 w-11" : "h-7 w-8"
-                } ${
-                  recording
-                    ? "text-red-400 hover:text-red-300"
-                    : transcribing
-                      ? "text-primary animate-pulse"
-                      : "text-white/55 hover:text-white/85 hover:bg-white/[0.06]"
-                } disabled:opacity-30 disabled:hover:bg-transparent`}
-              >
-                {recording ? (
-                  <span className={`relative flex ${isMobile ? "h-3.5 w-3.5" : "h-2.5 w-2.5"}`}>
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-                    <span className={`relative inline-flex rounded-full bg-red-400 ${isMobile ? "h-3.5 w-3.5" : "h-2.5 w-2.5"}`} />
-                  </span>
-                ) : (
-                  <svg width={isMobile ? "20" : "13"} height={isMobile ? "20" : "13"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="3" width="6" height="12" rx="3" />
-                    <path d="M5 11a7 7 0 0 0 14 0" />
-                    <line x1="12" y1="18" x2="12" y2="22" />
-                  </svg>
-                )}
-              </button>
+                isMobile={isMobile}
+              />
               <div className={`w-px bg-white/10 ${isMobile ? "h-6" : "h-4"}`} />
               <button
                 data-testid="new-drawing-btn"
