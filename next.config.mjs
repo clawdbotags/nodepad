@@ -52,7 +52,9 @@ const nextConfig = {
               "connect-src 'self' https://openrouter.ai https://api.openai.com https://api.z.ai https://cloud.umami.is https://api-gateway.umami.dev",
               "img-src 'self' data: blob: https://i.ytimg.com",
               "font-src 'self' data:",
-              "frame-src https://www.youtube-nocookie.com https://www.youtube.com",
+              // frame-src includes the tailnet-hosted wikiLLM (SilverBullet)
+              // so the Wiki tab in the sidebar can embed it via iframe.
+              "frame-src https://www.youtube-nocookie.com https://www.youtube.com https://ubuntu-4gb-hel1-1.tail6fe47c.ts.net:8443",
               "frame-ancestors 'none'",
             ].join("; "),
           },
