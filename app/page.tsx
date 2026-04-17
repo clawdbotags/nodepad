@@ -12,6 +12,7 @@ import {
 } from "@/components/excalidraw-overlay"
 import { AILogPanel } from "@/components/ai-log-panel"
 import { ChatView } from "@/components/chat-view"
+import { ChatDriveView } from "@/components/chat-drive-view"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -921,6 +922,13 @@ export default function Page() {
   // The "speaking" voice is Kokoro (self-hosted), the words are templated
   // from the actual augment diff — no LLM in the response loop.
   const [driveOpen, setDriveOpen] = useState(false)
+  // Chat Drive session — a separate voice-first overlay for agent chat.
+  // Opened from ChatView's "Drive" button. Unlike canvas Drive Mode this
+  // releases the audio session between turns so music keeps playing while
+  // the agent processes.
+  const [chatDriveSession, setChatDriveSession] = useState<
+    { roomId: string; roomName: string; me: string | null } | null
+  >(null)
   type DriveStatus = "idle" | "listening" | "thinking" | "speaking" | "error"
   const [driveStatus, setDriveStatus] = useState<DriveStatus>("idle")
   const [driveLastRundown, setDriveLastRundown] = useState<string>("")
@@ -2549,7 +2557,14 @@ export default function Page() {
         )}
 
         {/* Chat view — talk to all agents via Matrix inside the app. */}
-        {viewMode === "chat" && <ChatView isMobile={isMobile} />}
+        {viewMode === "chat" && (
+          <ChatView
+            isMobile={isMobile}
+            onStartDrive={(roomId, roomName, me) =>
+              setChatDriveSession({ roomId, roomName, me })
+            }
+          />
+        )}
 
         {/* Tiled view */}
         {viewMode === "tiled" && (
@@ -2928,6 +2943,19 @@ export default function Page() {
           aria-hidden="true"
           style={{ display: "none" }}
         />
+        {/* Chat Drive — voice-first agent chat overlay, opened from chat view's
+            "Drive" button. Mounts over everything; music keeps playing on the
+            car between turns because we release the audio session after each
+            recording instead of holding a persistent silent loop. */}
+        {chatDriveSession && (
+          <ChatDriveView
+            roomId={chatDriveSession.roomId}
+            roomName={chatDriveSession.roomName}
+            me={chatDriveSession.me}
+            onClose={() => setChatDriveSession(null)}
+          />
+        )}
+
         {driveOpen && (
           <div
             data-testid="drive-mode-overlay"

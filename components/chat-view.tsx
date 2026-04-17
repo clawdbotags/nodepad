@@ -64,7 +64,13 @@ function senderColor(mxid: string): string {
   return `hsl(${hue}, 65%, 72%)`
 }
 
-export function ChatView({ isMobile = false }: { isMobile?: boolean }) {
+export function ChatView({
+  isMobile = false,
+  onStartDrive,
+}: {
+  isMobile?: boolean
+  onStartDrive?: (roomId: string, roomName: string, me: string | null) => void
+}) {
   const [rooms, setRooms] = useState<Room[]>([])
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null)
   const [composer, setComposer] = useState("")
@@ -383,6 +389,20 @@ export function ChatView({ isMobile = false }: { isMobile?: boolean }) {
                     <span className="text-[10px] text-white/40 truncate">{activeRoom.topic}</span>
                   )}
                 </div>
+                {onStartDrive && (
+                  <button
+                    data-testid="chat-drive-start"
+                    onClick={() => onStartDrive(activeRoom.id, activeRoom.name, me)}
+                    title="Drive this chat — voice-first for the car"
+                    className="ml-auto flex items-center gap-1.5 rounded-sm border border-primary/40 bg-primary/10 hover:bg-primary/20 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary transition-colors"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <circle cx="12" cy="12" r="2.5" />
+                    </svg>
+                    Drive
+                  </button>
+                )}
               </div>
 
               {/* Messages */}
