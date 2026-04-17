@@ -95,6 +95,76 @@ function previewMessages(messages: Array<{ role: string; content: any }>): strin
 
 const REARRANGE_DEFAULT_MODEL = "google/gemini-3-flash"
 
+// ── Self-hosted Qwen3.6 backend (Ollama, AI Server) ────────────────────────
+// Used for default/structured augment when settings.augmentBackend === "qwen".
+// Multimodal turns (drawings present) silently fall back to OpenRouter inside
+// the dispatchers below. Rearrange always stays on OpenRouter — vision layout
+// is the one job we've confirmed Gemini 3 Flash does well and Qwen is untested.
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://100.95.37.85:11434"
+const OLLAMA_AUGMENT_MODEL = process.env.OLLAMA_AUGMENT_MODEL || "qwen3.6:35b-a3b-q4_K_M"
+
+async function ollamaChatPlain(opts: {
+  label: string
+  systemPrompt: string
+  userPrompt: string
+  jsonMode?: boolean
+  numPredict?: number
+  temperature?: number
+}): Promise<string> {
+  const t0 = Date.now()
+  const body: any = {
+    model: OLLAMA_AUGMENT_MODEL,
+    messages: [
+      { role: "system", content: opts.systemPrompt },
+      { role: "user", content: opts.userPrompt },
+    ],
+    stream: false,
+    // CRITICAL: Qwen3 thinking mode is on by default and burns through
+    // num_predict on internal CoT before emitting content. Disable it.
+    // Augment is one-shot text generation — no chain-of-thought needed.
+    think: false,
+    options: {
+      temperature: opts.temperature ?? 0.4,
+      num_predict: opts.numPredict ?? 2048,
+    },
+  }
+  if (opts.jsonMode) body.format = "json"
+
+  let status = 0
+  let content = ""
+  let errorMsg: string | undefined
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    status = res.status
+    const text = await res.text()
+    if (!res.ok) {
+      errorMsg = `HTTP ${status}: ${text.slice(0, 300)}`
+      throw new Error(errorMsg)
+    }
+    const parsed = JSON.parse(text)
+    content = String(parsed?.message?.content || "")
+  } catch (e: any) {
+    errorMsg = errorMsg || e?.message || String(e)
+    throw e
+  } finally {
+    recordCall({
+      label: opts.label,
+      model: OLLAMA_AUGMENT_MODEL,
+      system_prompt: opts.systemPrompt,
+      user_content: `[user]\n${opts.userPrompt}`,
+      response_text: content || (errorMsg || ""),
+      response_status: status,
+      latency_ms: Date.now() - t0,
+      error: errorMsg,
+    })
+  }
+  return content.trim()
+}
+
 function genId() {
   return Math.random().toString(36).slice(2, 10)
 }
@@ -128,14 +198,6 @@ type StructuredResult = {
 type SourceBlock = { text: string; image_data_url?: string }
 
 async function callLLMStructured(prompt: string, blocks: SourceBlock[], settings: Record<string, string>): Promise<StructuredResult> {
-  const provider = settings.provider || "openrouter"
-  const apiKey = settings.apiKey || ""
-  const modelId = settings.modelId || "anthropic/claude-3.5-sonnet"
-  const baseUrl =
-    settings.customBaseUrl ||
-    (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
-  if (!apiKey) throw new Error("No API key configured. Set it via /api/settings.")
-
   const inputCount = blocks.length
   // Scale output target with input size. Default: preserve information — roughly half
   // the input count, never less than a third, never more than input count.
@@ -191,28 +253,52 @@ Return ONLY valid JSON. No markdown fences, no prose, no commentary. The exact s
     })
     .join("\n\n")}`
 
-  // Multimodal user content: text first, then any drawing images in source order.
-  const userContent: any[] = [{ type: "text", text: userPrompt }]
-  for (const b of blocks) {
-    if (b.image_data_url) userContent.push({ type: "image_url", image_url: { url: b.image_data_url } })
-  }
-  const useMultimodal = userContent.length > 1
+  const hasImages = blocks.some(b => b.image_data_url)
 
-  const res = await fetchAndLog("augment.structured", `${baseUrl}/chat/completions`, {
-    model: modelId,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: useMultimodal ? userContent : userPrompt },
-    ],
-    temperature: 0.3,
-    response_format: { type: "json_object" },
-  }, apiKey)
-  if (!res.ok) {
-    throw new Error(`LLM call failed (${res.status}): ${res.text.slice(0, 300)}`)
+  // Self-hosted Qwen path. Falls back to OpenRouter for multimodal turns.
+  let content: string
+  if (settings.augmentBackend === "qwen" && !hasImages) {
+    content = await ollamaChatPlain({
+      label: "augment.structured.qwen",
+      systemPrompt,
+      userPrompt,
+      jsonMode: true,
+      temperature: 0.3,
+      numPredict: 4096, // structured graphs can be long
+    })
+  } else {
+    const provider = settings.provider || "openrouter"
+    const apiKey = settings.apiKey || ""
+    const modelId = settings.modelId || "anthropic/claude-3.5-sonnet"
+    const baseUrl =
+      settings.customBaseUrl ||
+      (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
+    if (!apiKey) throw new Error("No API key configured. Set it via /api/settings.")
+
+    // Multimodal user content: text first, then any drawing images in source order.
+    const userContent: any[] = [{ type: "text", text: userPrompt }]
+    for (const b of blocks) {
+      if (b.image_data_url) userContent.push({ type: "image_url", image_url: { url: b.image_data_url } })
+    }
+    const useMultimodal = userContent.length > 1
+
+    const res = await fetchAndLog("augment.structured", `${baseUrl}/chat/completions`, {
+      model: modelId,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: useMultimodal ? userContent : userPrompt },
+      ],
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+    }, apiKey)
+    if (!res.ok) {
+      throw new Error(`LLM call failed (${res.status}): ${res.text.slice(0, 300)}`)
+    }
+    const data = res.data
+    const c = data?.choices?.[0]?.message?.content
+    if (typeof c !== "string") throw new Error("LLM returned no content")
+    content = c
   }
-  const data = res.data
-  const content = data?.choices?.[0]?.message?.content
-  if (typeof content !== "string") throw new Error("LLM returned no content")
 
   // Be lenient: strip ```json fences if the model slipped them in
   const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim()
@@ -551,15 +637,6 @@ Image 2 (PROPOSED): the canvas after the first rearrange pass — this is what t
 }
 
 async function callLLM(prompt: string, blocks: SourceBlock[], settings: Record<string, string>): Promise<string> {
-  const provider = settings.provider || "openrouter"
-  const apiKey = settings.apiKey || ""
-  const modelId = settings.modelId || "anthropic/claude-3.5-sonnet"
-  const baseUrl =
-    settings.customBaseUrl ||
-    (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
-
-  if (!apiKey) throw new Error("No API key configured. Set it via /api/settings.")
-
   const systemPrompt = `You are an augmentation engine inside a spatial thinking canvas.
 The user has selected one or more text blocks and issued an instruction.
 Return ONE combined text block that satisfies the instruction — nothing more.
@@ -579,6 +656,29 @@ Rules:
       return `--- Block ${i + 1} ---\n${b.text}`
     })
     .join("\n\n")}`
+
+  const hasImages = blocks.some(b => b.image_data_url)
+
+  // Self-hosted Qwen path. Falls back to OpenRouter if any drawing/image is in
+  // scope (Qwen vision is not exercised here yet).
+  if (settings.augmentBackend === "qwen" && !hasImages) {
+    return ollamaChatPlain({
+      label: "augment.default.qwen",
+      systemPrompt,
+      userPrompt,
+      temperature: 0.4,
+      numPredict: 1024,
+    })
+  }
+
+  const provider = settings.provider || "openrouter"
+  const apiKey = settings.apiKey || ""
+  const modelId = settings.modelId || "anthropic/claude-3.5-sonnet"
+  const baseUrl =
+    settings.customBaseUrl ||
+    (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
+
+  if (!apiKey) throw new Error("No API key configured. Set it via /api/settings.")
 
   const userContent: any[] = [{ type: "text", text: userPrompt }]
   for (const b of blocks) {
