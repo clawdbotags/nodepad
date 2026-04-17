@@ -4,8 +4,11 @@ import { NextResponse } from "next/server"
 // Env-overridable so this can move to a different AI server without a redeploy.
 const WHISPER_API_URL =
   process.env.WHISPER_API_URL || "http://100.95.37.85:8080/v1/audio/transcriptions"
+// `base` instead of `large-v3` — ~11x faster on CPU and quality is
+// plenty for short dictation. Override via env if you need higher
+// accuracy (multilingual long-form, low-SNR audio).
 const WHISPER_MODEL =
-  process.env.WHISPER_MODEL || "Systran/faster-whisper-large-v3"
+  process.env.WHISPER_MODEL || "Systran/faster-whisper-base"
 
 export const runtime = "nodejs"
 // Audio uploads can take a few seconds; don't let the platform kill the
