@@ -77,9 +77,13 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
   // Latest-handleTap ref for MediaSession dispatch
   const handleTapRef = useRef<() => void>(() => {})
 
-  // TTS playback
-  const audioCtxRef = useRef<AudioContext | null>(null)
-  const audioSrcRef = useRef<AudioBufferSourceNode | null>(null)
+  // TTS playback via HTMLAudioElement (NOT Web Audio API) — critical for
+  // Android audio-focus / ducking behaviour. Web Audio plays as background
+  // media and Android won't duck Spotify/car music for it; HTMLAudioElement
+  // registers with the platform media session properly and triggers
+  // AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK so music drops out during the reply.
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null)
+  const ttsBlobUrlRef = useRef<string | null>(null)
 
   // Reply collection
   const sinceRef = useRef<string | null>(null)
@@ -209,28 +213,69 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
       })
       if (!speakRes.ok) throw new Error(`tts ${speakRes.status}`)
       const buf = await speakRes.arrayBuffer()
-      // Engage MediaSession for the duration of TTS so BT pause can skip.
+
+      // Engage MediaSession FIRST so metadata + playbackState=playing is set
+      // before the audio element starts. Android reads these to decide
+      // whether to grant AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK and ping the
+      // music source to duck. Without this, our audio plays OVER the music.
       await engageSession()
-      if (!audioCtxRef.current) {
-        const Ctor = (window as any).AudioContext || (window as any).webkitAudioContext
-        if (Ctor) audioCtxRef.current = new Ctor()
+
+      // Fresh blob URL each time — reuse of old URLs after revoke leaks or
+      // 404s on iOS Safari.
+      if (ttsBlobUrlRef.current) {
+        try { URL.revokeObjectURL(ttsBlobUrlRef.current) } catch {}
+        ttsBlobUrlRef.current = null
       }
-      const ctx = audioCtxRef.current
-      if (!ctx) throw new Error("no audio context")
-      if (ctx.state === "suspended") await ctx.resume()
-      const decoded = await ctx.decodeAudioData(buf.slice(0))
-      try { audioSrcRef.current?.stop() } catch {}
-      const src = ctx.createBufferSource()
-      src.buffer = decoded
-      src.connect(ctx.destination)
-      src.onended = () => {
+      const blob = new Blob([buf], { type: "audio/mpeg" })
+      const blobUrl = URL.createObjectURL(blob)
+      ttsBlobUrlRef.current = blobUrl
+
+      // One HTMLAudioElement across turns — tear down listeners each time,
+      // never recreate the element (recreating loses the platform's audio
+      // session attachment on some Android builds).
+      if (!ttsAudioRef.current) {
+        const a = new Audio()
+        a.preload = "auto"
+        a.crossOrigin = "anonymous"
+        ttsAudioRef.current = a
+      }
+      const audio = ttsAudioRef.current
+      audio.onended = null; audio.onerror = null; audio.onloadedmetadata = null
+      try { audio.pause() } catch {}
+      audio.loop = false
+      audio.volume = 1.0
+      audio.src = blobUrl
+
+      const cleanup = () => {
+        if (ttsBlobUrlRef.current === blobUrl) {
+          try { URL.revokeObjectURL(blobUrl) } catch {}
+          ttsBlobUrlRef.current = null
+        }
+      }
+      audio.onended = () => {
+        cleanup()
         releaseSession()
         setPhase("ready")
         setAudioStatus("")
       }
-      src.start(0)
-      audioSrcRef.current = src
-      setAudioStatus(`▶ ${decoded.duration.toFixed(1)}s`)
+      audio.onerror = () => {
+        cleanup()
+        releaseSession()
+        setError("audio playback error")
+        setPhase("ready")
+        setAudioStatus("")
+      }
+      audio.onloadedmetadata = () => {
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          setAudioStatus(`▶ ${audio.duration.toFixed(1)}s`)
+        }
+      }
+      try {
+        await audio.play()
+      } catch (playErr: any) {
+        cleanup()
+        throw new Error(`play blocked: ${playErr?.message || playErr}`)
+      }
     } catch (e: any) {
       console.warn("[chat-drive] tts failed:", e)
       setError(`TTS error: ${e?.message || e}`)
@@ -320,7 +365,11 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
     }
     if (phase === "speaking") {
       // Skip the TTS. Go straight to ready.
-      try { audioSrcRef.current?.stop() } catch {}
+      try { ttsAudioRef.current?.pause() } catch {}
+      if (ttsBlobUrlRef.current) {
+        try { URL.revokeObjectURL(ttsBlobUrlRef.current) } catch {}
+        ttsBlobUrlRef.current = null
+      }
       releaseSession()
       setPhase("ready")
       setAudioStatus("")
@@ -339,7 +388,11 @@ export function ChatDriveView({ roomId, roomName, me, onClose }: Props) {
       pollControllerRef.current?.abort()
       if (quietTimerRef.current) clearTimeout(quietTimerRef.current)
       if (hardTimeoutRef.current) clearTimeout(hardTimeoutRef.current)
-      try { audioSrcRef.current?.stop() } catch {}
+      try { ttsAudioRef.current?.pause() } catch {}
+      if (ttsBlobUrlRef.current) {
+        try { URL.revokeObjectURL(ttsBlobUrlRef.current) } catch {}
+        ttsBlobUrlRef.current = null
+      }
       try { voiceRef.current?.stop() } catch {}
       releaseSession()
     }
