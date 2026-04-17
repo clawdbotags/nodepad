@@ -1021,7 +1021,7 @@ export default function Page() {
         })
       }
 
-      // Build the rundown text from whatever the server actually did.
+      // Build the diff for the conversational responder + the offline fallback.
       const diff: AugmentDiff = {
         new_blocks: (res.new_blocks || []).map((b: any) => ({ id: b.id, text: b.text })),
         new_connections: (res.new_connections || []).map((c: any) => ({
@@ -1030,7 +1030,36 @@ export default function Page() {
         new_note_id: res.new_note?.id,
         new_note_text: res.new_note?.text,
       }
-      const rundown = formatRundown(diff)
+
+      // Conversational rundown via fast cheap LLM (Gemini Flash on OpenRouter
+      // by default). Falls back to deterministic templated rundown if the
+      // /api/drive-respond endpoint errors or the model returns empty.
+      let rundown = ""
+      try {
+        const respCtl = new AbortController()
+        const respTimer = setTimeout(() => respCtl.abort(), 8000) // hard 8s cap
+        const respRes = await fetch("/api/drive-respond", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript, diff }),
+          signal: respCtl.signal,
+        })
+        clearTimeout(respTimer)
+        if (respRes.ok) {
+          const respData = await respRes.json().catch(() => ({}))
+          if (respData?.text) {
+            rundown = String(respData.text).trim()
+            console.log(`[drive] respond model=${respData.model} elapsed=${respData.elapsed_ms}ms`)
+          }
+        } else {
+          console.warn("[drive] /api/drive-respond non-ok:", respRes.status)
+        }
+      } catch (e: any) {
+        console.warn("[drive] /api/drive-respond failed:", e?.message)
+      }
+      // Fallback if the LLM responder didn't work — never let the loop go silent.
+      if (!rundown) rundown = formatRundown(diff)
+
       setDriveLastRundown(rundown)
       setDriveTurnCount(c => c + 1)
 
