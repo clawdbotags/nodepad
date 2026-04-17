@@ -2494,21 +2494,16 @@ export default function Page() {
             data-testid="mobile-top-bar"
             className="shrink-0 flex items-center gap-2 px-2 pl-12 pr-2 py-1.5 border-b border-white/10 bg-black/70 backdrop-blur-md"
           >
-            <div data-testid="view-toggle" className="flex items-center gap-1 rounded-sm border border-white/10 bg-black/40 px-1 py-1">
-              {(["tiled", "graph"] as ViewMode[]).map(m => (
-                <button
-                  key={m}
-                  onClick={() => setViewMode(m)}
-                  className={`rounded-sm px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
-                    viewMode === m
-                      ? "bg-primary/15 border border-primary/40 text-primary"
-                      : "text-white/60 hover:bg-white/[0.06] hover:text-white/85 border border-transparent"
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
+            <NavTabs
+              testId="view-toggle"
+              variant="group"
+              items={(["tiled", "graph"] as ViewMode[]).map(m => ({
+                key: m,
+                label: m,
+                active: viewMode === m,
+                onClick: () => setViewMode(m),
+              }))}
+            />
             <div className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 truncate max-w-[120px]">
               {sessions.find(s => s.id === activeSessionId)?.name || ""}
             </div>
@@ -2519,20 +2514,17 @@ export default function Page() {
         {/* Desktop view toggle — drops Canvas on mobile (drag/pan/zoom is
             unusable on phones; mobile users get tiled + graph in top bar). */}
         {!isMobile && (
-          <div data-testid="view-toggle" className="absolute left-3 bottom-3 z-30 flex items-center gap-1 rounded-sm border border-white/10 bg-black/60 backdrop-blur-md px-1.5 py-1">
-            {(["canvas", "tiled", "graph"] as ViewMode[]).map(m => (
-              <button
-                key={m}
-                onClick={() => setViewMode(m)}
-                className={`rounded-sm px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider transition-all ${
-                  viewMode === m
-                    ? "bg-primary/12 border border-primary/35 text-primary shadow-[0_0_0_1px_var(--primary)]"
-                    : "text-white/55 hover:bg-white/[0.06] hover:text-white/80 border border-transparent"
-                }`}
-              >
-                {m}
-              </button>
-            ))}
+          <div className="absolute left-3 bottom-3 z-30">
+            <NavTabs
+              testId="view-toggle"
+              variant="group"
+              items={(["canvas", "tiled", "graph"] as ViewMode[]).map(m => ({
+                key: m,
+                label: m,
+                active: viewMode === m,
+                onClick: () => setViewMode(m),
+              }))}
+            />
           </div>
         )}
 
