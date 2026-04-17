@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { TextField } from "@/components/ui/text-field"
 
 /**
  * Matrix-backed chat view for nodepad. Shows rooms Albert's account has
@@ -280,16 +281,6 @@ export function ChatView({
     }
   }, [activeRoomId, composer, sending, me])
 
-  const onComposerKey = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      // Enter → send, Shift+Enter → newline. Standard chat UX.
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault()
-        send()
-      }
-    },
-    [send]
-  )
 
   // ── Layout ──────────────────────────────────────────────────────────────
   const showTimeline = isMobile ? !!activeRoomId : true
@@ -457,13 +448,14 @@ export function ChatView({
 
               {/* Composer */}
               <div className="shrink-0 border-t border-white/10 bg-black/70 px-2 py-2 flex items-end gap-2">
-                <textarea
+                <TextField
+                  multiline
                   value={composer}
                   onChange={e => setComposer(e.target.value)}
-                  onKeyDown={onComposerKey}
+                  onSubmit={send}
                   placeholder={`Message ${activeRoom.name}…`}
                   rows={1}
-                  className="flex-1 resize-none rounded-sm border border-white/15 bg-white/[0.05] px-3 py-2 text-[13px] text-white/90 placeholder-white/35 focus:outline-none focus:border-primary/60 max-h-40"
+                  className="max-h-40"
                   style={{ minHeight: 40 }}
                 />
                 <button

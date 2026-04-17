@@ -13,6 +13,7 @@ import {
 import { AILogPanel } from "@/components/ai-log-panel"
 import { VoiceMicButton } from "@/components/ui/voice-mic-button"
 import { BlockEditTextarea } from "@/components/ui/block-edit-textarea"
+import { TextField } from "@/components/ui/text-field"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -2862,22 +2863,19 @@ export default function Page() {
                   ? "Report this augment to engineer"
                   : "Share canvas with engineer"}
               </div>
-              <textarea
+              <TextField
+                multiline
                 data-testid="report-note"
                 value={reportNote}
                 onChange={e => setReportNote(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault()
-                    submitReport()
-                  }
-                }}
+                onSubmit={submitReport}
+                submitKey="cmd-enter"
                 disabled={reportBusy}
                 placeholder={hasReportContext
                   ? "What's wrong with this result? (e.g. hierarchy went flat, labels lost meaning)"
                   : "What should engineer look at? (optional)"}
                 rows={3}
-                className="rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-amber-500/50 transition-colors resize-none"
+                className="focus:!border-amber-500/50"
               />
               <div className="flex items-center justify-between">
                 <div className="font-mono text-[10px] text-white/40">
@@ -3085,24 +3083,18 @@ export default function Page() {
                 })()}
               </div>
               <div className="flex items-stretch gap-2">
-                <input
+                <TextField
                   ref={augmentInputRef}
                   data-testid="augment-input"
                   value={augmentPrompt}
                   onChange={e => setAugmentPrompt(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault()
-                      submitAugment()
-                    }
-                  }}
+                  onSubmit={submitAugment}
                   disabled={augmentBusy || augmentVoice.transcribing}
                   placeholder={augmentRearrange
                     ? "How should the layout change? (e.g. spread as a left-to-right timeline)"
                     : augmentStructured
                     ? "Describe the structure (e.g. concept map with causal arrows)"
                     : "Instruction (e.g. reformat as checklist)"}
-                  className="flex-1 min-w-0 rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2 font-mono text-sm text-foreground outline-none placeholder:text-white/30 focus:border-primary/50 transition-colors"
                 />
                 <VoiceMicButton
                   testId="augment-voice-btn"
@@ -3197,22 +3189,21 @@ export default function Page() {
                 Entry
               </div>
             )}
-            <input
+            <TextField
               ref={canvasInputRef}
               data-testid="canvas-input"
               value={inputText}
               onChange={e => setInputText(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault()
-                  if (inputText.trim()) {
-                    createBlock(inputText)
-                    setInputText("")
-                  }
+              onSubmit={() => {
+                if (inputText.trim()) {
+                  createBlock(inputText)
+                  setInputText("")
                 }
               }}
               placeholder={isMobile ? "Capture…" : "Capture something..."}
-              className={`flex-1 min-w-0 bg-transparent font-mono tracking-tight text-white outline-none placeholder:text-white/35 ${isMobile ? "text-base" : "text-sm"}`}
+              bordered={false}
+              size={isMobile ? "base" : "sm"}
+              className="tracking-tight text-white"
               autoFocus={!isMobile}
             />
           </div>
