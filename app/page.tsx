@@ -927,13 +927,26 @@ export default function Page() {
     stop: () => void
     recording: boolean
   } | null>(null)
+  // Guard so rearm can only fire once per turn even if multiple paths
+  // (onended + fallback timer + onerror) all race to call it.
+  const driveRearmedRef = useRef<boolean>(true)
   const safeRearm = useCallback(() => {
+    if (driveRearmedRef.current) {
+      console.log("[drive] safeRearm: already rearmed, skip")
+      return
+    }
+    driveRearmedRef.current = true
     if (!driveAutoArmRef.current) {
+      console.log("[drive] safeRearm: auto-arm off → idle")
       setDriveStatus("idle")
       return
     }
+    console.log("[drive] safeRearm: → listening")
     setDriveStatus("listening")
-    setTimeout(() => { driveVoiceRef.current?.start() }, 80)
+    setTimeout(() => {
+      console.log("[drive] safeRearm: starting recorder")
+      driveVoiceRef.current?.start()
+    }, 80)
   }, [])
 
   // Drive Mode voice recorder — on transcript, calls the latest runDriveTurn.
@@ -961,6 +974,9 @@ export default function Page() {
   // Run one Drive Mode turn: transcript → structured augment → rundown → TTS.
   const runDriveTurn = useCallback(async (transcript: string) => {
     if (!activeSessionId) return
+    console.log("[drive] turn start, transcript len:", transcript.length)
+    // Mark this turn as not-yet-rearmed; safeRearm() flips it back to true.
+    driveRearmedRef.current = false
     setDriveStatus("thinking")
     try {
       // Always use structured mode in Drive Mode — it adds new blocks +
@@ -1025,15 +1041,61 @@ export default function Page() {
           audio = new Audio()
           driveAudioRef.current = audio
         }
+        // Defensive reset — clear any prior handlers so a stale onended can't
+        // double-fire and a previous fallback timer can't clobber this turn.
+        audio.onended = null
+        audio.onerror = null
+        audio.onloadedmetadata = null
+        audio.loop = false
+        try { audio.pause() } catch {}
         audio.src = url
-        audio.onended = () => { URL.revokeObjectURL(url); safeRearm() }
-        audio.onerror = () => { URL.revokeObjectURL(url); safeRearm() }
-        await audio.play().catch(err => {
-          console.warn("audio play failed:", err)
+
+        // Fallback rearm: iOS Safari sometimes silently drops `audio.onended`
+        // events on a reused HTMLAudioElement. Schedule a max-duration timer
+        // and clear it from onended/onerror. Default to 30s if metadata never
+        // arrives; bump to actual duration + 1.5s buffer once we know it.
+        let rearmTimer: ReturnType<typeof setTimeout> | null = null
+        const armFallback = (ms: number) => {
+          if (rearmTimer) clearTimeout(rearmTimer)
+          console.log(`[drive] arming fallback rearm timer: ${ms}ms`)
+          rearmTimer = setTimeout(() => {
+            console.warn("[drive] fallback rearm fired (audio.onended likely never came)")
+            safeRearm()
+          }, ms)
+        }
+        const clearFallback = () => {
+          if (rearmTimer) { clearTimeout(rearmTimer); rearmTimer = null }
+        }
+        audio.onloadedmetadata = () => {
+          if (Number.isFinite(audio!.duration) && audio!.duration > 0) {
+            armFallback(Math.ceil(audio!.duration * 1000) + 1500)
+          }
+        }
+        audio.onended = () => {
+          console.log("[drive] audio.onended")
+          clearFallback()
+          URL.revokeObjectURL(url)
           safeRearm()
-        })
+        }
+        audio.onerror = (e) => {
+          console.warn("[drive] audio.onerror", e)
+          clearFallback()
+          URL.revokeObjectURL(url)
+          safeRearm()
+        }
+        // Initial 30s ceiling — replaced once metadata loads.
+        armFallback(30000)
+
+        try {
+          await audio.play()
+          console.log("[drive] audio.play() resolved, duration:", audio.duration)
+        } catch (err) {
+          console.warn("[drive] audio play failed:", err)
+          clearFallback()
+          safeRearm()
+        }
       } catch (e: any) {
-        console.warn("TTS failed:", e?.message || e)
+        console.warn("[drive] TTS failed:", e?.message || e)
         safeRearm()
       }
     } catch (e: any) {
@@ -1065,10 +1127,11 @@ export default function Page() {
   // Close Drive Mode — stop everything cleanly.
   const closeDriveMode = useCallback(() => {
     driveAutoArmRef.current = false
+    driveRearmedRef.current = true // suppress any in-flight onended → rearm
     if (driveVoiceRef.current?.recording) driveVoiceRef.current.stop()
     const a = driveAudioRef.current
     if (a) {
-      try { a.pause(); a.src = "" } catch {}
+      try { a.pause(); a.src = ""; a.onended = null; a.onerror = null } catch {}
     }
     setDriveOpen(false)
     setDriveStatus("idle")
