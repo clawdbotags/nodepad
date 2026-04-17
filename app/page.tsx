@@ -2908,6 +2908,22 @@ export default function Page() {
             high-contrast colors so it's readable from a phone mounted on a
             dashboard at arm's length. Backdrop covers EVERYTHING (z-[80]) so
             no canvas tap-throughs while driving. */}
+        {/* Hidden silent audio loop — kept mounted ALWAYS (even when Drive
+            Mode is closed) so that driveSilentLoopRef is populated at the
+            moment openDriveMode fires .play() inside the user gesture.
+            If we inline this inside {driveOpen && ...}, the ref is still
+            null on first open (React commits the mount AFTER openDriveMode
+            returns), the play() no-ops, MediaSession stays dormant, and
+            media-key events never route to us. */}
+        <audio
+          ref={driveSilentLoopRef}
+          src={DRIVE_SILENT_LOOP_SRC}
+          loop
+          playsInline
+          preload="auto"
+          aria-hidden="true"
+          style={{ display: "none" }}
+        />
         {driveOpen && (
           <div
             data-testid="drive-mode-overlay"
@@ -2916,18 +2932,6 @@ export default function Page() {
             tabIndex={-1}
             className="fixed inset-0 z-[80] flex flex-col items-center justify-between bg-black/95 backdrop-blur-2xl px-4 py-8 select-none cursor-pointer"
           >
-            {/* Hidden silent audio loop — keeps MediaSession active so BT /
-                Android Auto / headset media-key events route to us while
-                Drive Mode is open. See openDriveMode + closeDriveMode. */}
-            <audio
-              ref={driveSilentLoopRef}
-              src={DRIVE_SILENT_LOOP_SRC}
-              loop
-              playsInline
-              preload="auto"
-              aria-hidden="true"
-              style={{ display: "none" }}
-            />
             {/* Top bar — title + close */}
             <div className="w-full flex items-center justify-between">
               <div className="flex items-center gap-2">
