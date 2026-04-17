@@ -20,6 +20,8 @@ import { SidebarListItem } from "@/components/ui/sidebar-list-item"
 import { ToolbarPill } from "@/components/ui/toolbar-pill"
 import { CloseIcon, MicIcon, SpeakerIcon, SpinnerIcon } from "@/components/ui/icons"
 import { EntryBar, EntryBarIconCluster, EntryBarIconDivider } from "@/components/ui/entry-bar"
+import { ChatView } from "@/components/chat-view"
+import { ChatDriveView } from "@/components/chat-drive-view"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 
@@ -715,6 +717,24 @@ export default function Page() {
     update()
     mq.addEventListener("change", update)
     return () => mq.removeEventListener("change", update)
+  }, [])
+
+  // Nodes ↔ Rooms is a LOCAL toggle, not a route jump — we used to navigate
+  // to /chat but that forced a full reload between every switch, losing
+  // canvas state and the Matrix long-poll. Now the chat layer is an
+  // overlay that slides on top of the canvas and both views live in the
+  // same component. /chat still works as a URL (redirects here with
+  // ?view=rooms).
+  const [sidebarMode, setSidebarMode] = useState<"nodes" | "rooms">("nodes")
+  const [chatDriveSession, setChatDriveSession] = useState<
+    { roomId: string; roomName: string; me: string | null } | null
+  >(null)
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("view") === "rooms" || window.location.pathname === "/chat") {
+      setSidebarMode("rooms")
+    }
   }, [])
 
   // View mode — defaults to tiled on mobile (canvas needs precise pan/zoom).
@@ -2376,15 +2396,13 @@ export default function Page() {
           </div>
 
           {/* Sidebar mode tabs — switch between canvas list and Matrix rooms.
-              "Rooms" is a route jump to /chat (which has the rooms list as
-              its own sidebar). Keeping the chat experience on its own route
-              lets the main content area be a full-width timeline when a
-              room's open, and also lets drive-mode state live there. */}
+              No route jump — both live in the same component, so canvas
+              state + Matrix sync survive every toggle. */}
           <NavTabs
             testId="sidebar-mode-tabs"
             items={[
-              { key: "nodes", label: "Nodes", active: true },
-              { key: "rooms", label: "Rooms", href: "/chat" },
+              { key: "nodes", label: "Nodes", active: sidebarMode === "nodes", onClick: () => setSidebarMode("nodes") },
+              { key: "rooms", label: "Rooms", active: sidebarMode === "rooms", onClick: () => setSidebarMode("rooms") },
             ]}
           />
 
@@ -3294,6 +3312,42 @@ export default function Page() {
           </>
         )}
       </main>
+
+      {/* Rooms overlay — same page, no refresh. Always mounted so the
+          Matrix long-poll keeps running; just hidden when on Nodes.
+          ChatView paints the sidebar + timeline + composer; its
+          `sidebarTabs` prop renders the same Nodes|Rooms toggle that
+          lives on the canvas sidebar, but wired to flip the local
+          viewMode instead of navigating. */}
+      <div
+        className={`absolute inset-0 z-40 bg-black ${sidebarMode === "rooms" ? "block" : "hidden"}`}
+        aria-hidden={sidebarMode !== "rooms"}
+      >
+        <ChatView
+          isMobile={isMobile}
+          onStartDrive={(roomId, roomName, me) =>
+            setChatDriveSession({ roomId, roomName, me })
+          }
+          sidebarTabs={
+            <NavTabs
+              testId="sidebar-mode-tabs-rooms"
+              items={[
+                { key: "nodes", label: "Nodes", onClick: () => setSidebarMode("nodes") },
+                { key: "rooms", label: "Rooms", active: true, onClick: () => setSidebarMode("rooms") },
+              ]}
+            />
+          }
+        />
+      </div>
+
+      {chatDriveSession && (
+        <ChatDriveView
+          roomId={chatDriveSession.roomId}
+          roomName={chatDriveSession.roomName}
+          me={chatDriveSession.me}
+          onClose={() => setChatDriveSession(null)}
+        />
+      )}
     </div>
   )
 }

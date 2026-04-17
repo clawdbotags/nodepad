@@ -5,7 +5,9 @@ import { TextField } from "@/components/ui/text-field"
 import { SidebarListItem } from "@/components/ui/sidebar-list-item"
 import { DriveButton } from "@/components/ui/drive-button"
 import { ToolbarPill } from "@/components/ui/toolbar-pill"
-import { EntryBar, EntryBarIconCluster } from "@/components/ui/entry-bar"
+import { EntryBar, EntryBarIconCluster, EntryBarIconDivider } from "@/components/ui/entry-bar"
+import { VoiceMicButton } from "@/components/ui/voice-mic-button"
+import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 
 /**
  * Matrix-backed chat view for nodepad. Shows rooms Albert's account has
@@ -88,6 +90,19 @@ export function ChatView({
   const [error, setError] = useState<string | null>(null)
   const [initialLoaded, setInitialLoaded] = useState(false)
   const [me, setMe] = useState<string | null>(null)
+
+  // Voice input on the chat composer. Transcription gets APPENDED to the
+  // current draft (no auto-send) so the user reviews before hitting Enter
+  // or Send — same contract as the canvas entry bar.
+  const composerVoice = useVoiceRecorder({
+    onTranscript: text => {
+      setComposer(prev => {
+        const sep = prev && !prev.endsWith(" ") ? " " : ""
+        return prev + sep + text
+      })
+    },
+    onError: msg => setError(msg),
+  })
 
   // sinceToken lives in a ref so the long-poll loop doesn't restart
   // on each update — the `useEffect([])` runs once, reads the latest
@@ -427,25 +442,35 @@ export function ChatView({
               </div>
 
               {/* Composer — shared <EntryBar> shell (same chrome as the
-                  canvas entry bar). Drive moved OUT of the room header and
-                  INTO the icon cluster so the drive-mode affordance sits in
-                  the same place on every surface that takes text. */}
+                  canvas entry bar). Drive + mic live in the icon cluster,
+                  matching the canvas entry bar layout byte-for-byte. */}
               <EntryBar
                 testId="chat-composer-bar"
                 label="Chat"
                 isMobile={isMobile}
-                alignItems="end"
                 actions={
-                  onStartDrive ? (
-                    <EntryBarIconCluster>
-                      <DriveButton
-                        testId="chat-drive-start"
-                        onClick={() => onStartDrive(activeRoom.id, activeRoom.name, me)}
-                        size={isMobile ? "mobile" : "compact"}
-                        title="Drive this chat — voice-first for the car"
-                      />
-                    </EntryBarIconCluster>
-                  ) : null
+                  <EntryBarIconCluster>
+                    <VoiceMicButton
+                      testId="chat-voice-input-btn"
+                      variant="entry"
+                      recording={composerVoice.recording}
+                      transcribing={composerVoice.transcribing}
+                      onToggle={composerVoice.toggle}
+                      disabled={composerVoice.transcribing || !activeRoom}
+                      isMobile={isMobile}
+                    />
+                    {onStartDrive && (
+                      <>
+                        <EntryBarIconDivider isMobile={isMobile} />
+                        <DriveButton
+                          testId="chat-drive-start"
+                          onClick={() => onStartDrive(activeRoom.id, activeRoom.name, me)}
+                          size={isMobile ? "mobile" : "compact"}
+                          title="Drive this chat — voice-first for the car"
+                        />
+                      </>
+                    )}
+                  </EntryBarIconCluster>
                 }
                 submit={
                   <ToolbarPill
@@ -459,16 +484,13 @@ export function ChatView({
                 }
               >
                 <TextField
-                  multiline
                   value={composer}
                   onChange={e => setComposer(e.target.value)}
                   onSubmit={send}
                   placeholder={`Message ${activeRoom.name}…`}
-                  rows={1}
                   bordered={false}
                   size={isMobile ? "base" : "sm"}
-                  className="tracking-tight text-white max-h-40"
-                  style={{ minHeight: 40 }}
+                  className="tracking-tight text-white"
                 />
               </EntryBar>
             </>
