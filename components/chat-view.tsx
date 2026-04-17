@@ -67,9 +67,14 @@ function senderColor(mxid: string): string {
 export function ChatView({
   isMobile = false,
   onStartDrive,
+  sidebarTabs,
 }: {
   isMobile?: boolean
   onStartDrive?: (roomId: string, roomName: string, me: string | null) => void
+  /** Slot rendered above the rooms list (desktop) / at the top of the list
+   *  view (mobile). Used by the /chat page to render the same Nodes|Rooms
+   *  toggle that appears in the canvas sidebar. */
+  sidebarTabs?: React.ReactNode
 }) {
   const [rooms, setRooms] = useState<Room[]>([])
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null)
@@ -296,9 +301,10 @@ export function ChatView({
       {showList && (
         <div
           className={`flex flex-col border-r border-white/10 bg-white/[0.02] ${
-            isMobile ? "w-full" : "w-[280px] shrink-0"
+            isMobile ? "w-full" : "w-[240px] shrink-0"
           }`}
         >
+          {sidebarTabs}
           <div className="shrink-0 border-b border-white/10 px-3 py-2 flex items-center gap-2">
             <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/55">
               Rooms

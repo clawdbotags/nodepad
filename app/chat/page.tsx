@@ -11,7 +11,6 @@
  */
 
 import { useEffect, useState } from "react"
-import Link from "next/link"
 import { ChatView } from "@/components/chat-view"
 import { ChatDriveView } from "@/components/chat-drive-view"
 
@@ -29,25 +28,31 @@ export default function ChatPage() {
     return () => mq.removeEventListener("change", onChange)
   }, [])
 
+  // Same tab toggle that appears in the canvas sidebar — "Rooms" is active
+  // here, "Nodes" routes back to /. Using <a> (full navigation) so page.tsx
+  // can remount its state fresh each time.
+  const sidebarTabs = (
+    <div className="shrink-0 flex items-center gap-1 border-b border-white/10 bg-black/30 px-2 py-1.5">
+      <a
+        href="/"
+        className="flex-1 text-center rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] hover:text-primary hover:border-primary/35 border border-transparent transition-all"
+      >
+        Nodes
+      </a>
+      <button
+        className="flex-1 rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary"
+      >
+        Rooms
+      </button>
+    </div>
+  )
+
   return (
     <div className="fixed inset-0 flex flex-col bg-black text-white">
-      {/* Slim top bar — label + back-to-canvas link. Deliberately minimal so
-          the chat UI itself owns the visual weight. */}
-      <div className="shrink-0 flex items-center gap-3 px-3 py-1.5 border-b border-white/10 bg-black/70 backdrop-blur-md">
-        <span className="font-mono text-[11px] uppercase tracking-widest text-white/70">
-          Chat
-        </span>
-        <Link
-          href="/"
-          className="ml-auto rounded-sm border border-white/15 bg-black/40 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-white/70 hover:border-primary/40 hover:text-primary transition-all"
-        >
-          → Canvas
-        </Link>
-      </div>
-
       <div className="flex-1 min-h-0 overflow-hidden">
         <ChatView
           isMobile={isMobile}
+          sidebarTabs={sidebarTabs}
           onStartDrive={(roomId, roomName, me) =>
             setChatDriveSession({ roomId, roomName, me })
           }

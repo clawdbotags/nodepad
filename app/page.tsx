@@ -2380,6 +2380,25 @@ export default function Page() {
             </button>
           </div>
 
+          {/* Sidebar mode tabs — switch between canvas list and Matrix rooms.
+              "Rooms" is a route jump to /chat (which has the rooms list as
+              its own sidebar). Keeping the chat experience on its own route
+              lets the main content area be a full-width timeline when a
+              room's open, and also lets drive-mode state live there. */}
+          <div data-testid="sidebar-mode-tabs" className="shrink-0 flex items-center gap-1 border-b border-white/10 bg-black/30 px-2 py-1.5">
+            <button
+              className="flex-1 rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary"
+            >
+              Nodes
+            </button>
+            <a
+              href="/chat"
+              className="flex-1 text-center rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] hover:text-primary hover:border-primary/35 border border-transparent transition-all"
+            >
+              Rooms
+            </a>
+          </div>
+
           {/* Session list */}
           <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5 custom-scrollbar">
             {sessions.map(s => (
@@ -2522,12 +2541,6 @@ export default function Page() {
                 </button>
               ))}
             </div>
-            <a
-              href="/chat"
-              className="rounded-sm border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-white/70 hover:border-primary/40 hover:text-primary transition-all"
-            >
-              Chat →
-            </a>
             <div className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 truncate max-w-[120px]">
               {sessions.find(s => s.id === activeSessionId)?.name || ""}
             </div>
@@ -2552,13 +2565,6 @@ export default function Page() {
                 {m}
               </button>
             ))}
-            <div className="mx-1 h-5 w-px bg-white/15" />
-            <a
-              href="/chat"
-              className="rounded-sm px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-white/55 hover:bg-white/[0.06] hover:text-primary transition-all border border-transparent hover:border-primary/35"
-            >
-              Chat →
-            </a>
           </div>
         )}
 
