@@ -368,9 +368,10 @@ export function ChatView({
                 label={r.name}
                 badge={
                   r.unread > 0 ? (
-                    <span className="inline-flex items-center justify-center rounded-full bg-red-500/90 px-1.5 min-w-[18px] h-[18px] text-[10px] font-bold text-white">
-                      {r.unread}
-                    </span>
+                    <span
+                      aria-label={`${r.unread} unread`}
+                      className="inline-block h-1.5 w-1.5 rounded-full bg-primary/80"
+                    />
                   ) : null
                 }
                 subtitle={

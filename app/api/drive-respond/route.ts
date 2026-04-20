@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getSettings } from "@/lib/server/db"
 import { decrypt, isSensitiveKey } from "@/lib/server/crypto"
+import { callClaudeCode } from "@/lib/server/claude-subprocess"
 
 // POST /api/drive-respond
 // Body: {
@@ -117,8 +118,14 @@ export async function POST(req: Request) {
       settings.customBaseUrl ||
       (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
 
-    // No key configured? Don't break the loop — return a graceful fallback.
-    if (!apiKey) {
+    // Claude Code backend short-circuit. When driveBackend === "claude-code"
+    // this path runs via the CLI subprocess — bypasses OR apiKey requirement.
+    const useClaudeCode = settings.driveBackend === "claude-code"
+    const ccModel = settings.claudeCodeModel || "claude-opus-4-7"
+
+    // No key configured AND not using claude-code? Don't break the loop —
+    // return a graceful fallback.
+    if (!apiKey && !useClaudeCode) {
       return NextResponse.json({
         text: fallbackRundown(diff),
         model: "fallback (no api key)",
@@ -151,50 +158,70 @@ export async function POST(req: Request) {
         2
       )
 
-    let res: Response
-    try {
-      res = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          // OpenRouter conventions for proper attribution / rankings
-          "HTTP-Referer": "https://nodepad.local",
-          "X-Title": "nodepad-v2 drive-mode",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userContent },
-          ],
-          temperature: 0.6,
-          max_tokens: 120,
-          // OR picks lowest-TTFB upstream — critical for the live voice loop.
-          provider: { sort: "latency" },
-        }),
-      })
-    } catch (netErr: any) {
-      console.warn("[drive-respond] network error → fallback:", netErr?.message)
-      return NextResponse.json({
-        text: fallbackRundown(diff),
-        model: `fallback (net: ${netErr?.message || "err"})`,
-        elapsed_ms: Date.now() - t0,
-      })
-    }
+    let raw: string = ""
+    if (useClaudeCode) {
+      try {
+        const cc = await callClaudeCode({
+          prompt: userContent,
+          systemPrompt: SYSTEM_PROMPT,
+          model: ccModel,
+          timeoutMs: 60_000,
+        })
+        raw = cc.text.trim()
+      } catch (ccErr: any) {
+        console.warn("[drive-respond] claude-code error → fallback:", ccErr?.message)
+        return NextResponse.json({
+          text: fallbackRundown(diff),
+          model: `fallback (cc: ${(ccErr?.message || "err").slice(0, 80)})`,
+          elapsed_ms: Date.now() - t0,
+        })
+      }
+    } else {
+      let res: Response
+      try {
+        res = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            // OpenRouter conventions for proper attribution / rankings
+            "HTTP-Referer": "https://nodepad.local",
+            "X-Title": "nodepad-v2 drive-mode",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: userContent },
+            ],
+            temperature: 0.6,
+            max_tokens: 120,
+            // OR picks lowest-TTFB upstream — critical for the live voice loop.
+            provider: { sort: "latency" },
+          }),
+        })
+      } catch (netErr: any) {
+        console.warn("[drive-respond] network error → fallback:", netErr?.message)
+        return NextResponse.json({
+          text: fallbackRundown(diff),
+          model: `fallback (net: ${netErr?.message || "err"})`,
+          elapsed_ms: Date.now() - t0,
+        })
+      }
 
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => "")
-      console.warn(`[drive-respond] ${model} ${res.status}: ${errBody.slice(0, 300)}`)
-      return NextResponse.json({
-        text: fallbackRundown(diff),
-        model: `fallback (${res.status})`,
-        elapsed_ms: Date.now() - t0,
-      })
-    }
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "")
+        console.warn(`[drive-respond] ${model} ${res.status}: ${errBody.slice(0, 300)}`)
+        return NextResponse.json({
+          text: fallbackRundown(diff),
+          model: `fallback (${res.status})`,
+          elapsed_ms: Date.now() - t0,
+        })
+      }
 
-    const data = await res.json().catch(() => ({}))
-    const raw = String(data?.choices?.[0]?.message?.content || "").trim()
+      const data = await res.json().catch(() => ({}))
+      raw = String(data?.choices?.[0]?.message?.content || "").trim()
+    }
     if (!raw) {
       return NextResponse.json({
         text: fallbackRundown(diff),
@@ -213,7 +240,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       text: cleaned || fallbackRundown(diff),
-      model,
+      model: useClaudeCode ? `claude-code/${ccModel}` : model,
       elapsed_ms: Date.now() - t0,
     })
   } catch (e: any) {

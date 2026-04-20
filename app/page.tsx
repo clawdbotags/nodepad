@@ -25,6 +25,7 @@ import { ChatDriveView } from "@/components/chat-drive-view"
 import { useVoiceRecorder } from "@/lib/use-voice-recorder"
 import { formatRundown, type AugmentDiff } from "@/lib/drive-mode-rundown"
 import { formatRelativeTime } from "@/lib/utils"
+import { blocksToMarkdown, slugForFilename } from "@/lib/block-markdown"
 
 // 0.2 s of 8-bit PCM silence (8 kHz mono, 1644 bytes → 2192-char base64).
 // Looped while Drive Mode is open to keep an active MediaSession on Chrome
@@ -772,6 +773,10 @@ export default function Page() {
   // AI call/response debug log (right-side panel)
   const [aiLogOpen, setAiLogOpen] = useState(false)
 
+  // Session rename (state only; callbacks defined below after showToast)
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
+  const [renamingSessionName, setRenamingSessionName] = useState("")
+
   // Custom confirm dialog
   const [confirmState, setConfirmState] = useState<{
     open: boolean
@@ -791,6 +796,33 @@ export default function Page() {
     setToast(msg)
     setTimeout(() => setToast(null), 2200)
   }, [])
+
+  // Session rename callbacks (state declared above)
+  const startRenameSession = useCallback((id: string, currentName: string) => {
+    setRenamingSessionId(id)
+    setRenamingSessionName(currentName)
+  }, [])
+  const cancelRenameSession = useCallback(() => {
+    setRenamingSessionId(null)
+    setRenamingSessionName("")
+  }, [])
+  const commitRenameSession = useCallback(async () => {
+    if (!renamingSessionId) return
+    const id = renamingSessionId
+    const name = renamingSessionName.trim()
+    setRenamingSessionId(null)
+    setRenamingSessionName("")
+    if (!name) return
+    const prev = sessions.find(s => s.id === id)
+    if (!prev || prev.name === name) return
+    setSessions(prevList => prevList.map(s => (s.id === id ? { ...s, name } : s)))
+    try {
+      await api(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify({ name }) })
+    } catch (e: any) {
+      showToast(`Rename failed: ${e.message}`)
+      if (prev) setSessions(prevList => prevList.map(s => (s.id === id ? prev : s)))
+    }
+  }, [renamingSessionId, renamingSessionName, sessions, showToast])
 
   // ── Load sessions on mount ────────────────────────────────────────────────
   useEffect(() => {
@@ -1684,6 +1716,10 @@ export default function Page() {
       const tag = (e.target as HTMLElement).tagName
       const isInput = tag === "INPUT" || tag === "TEXTAREA"
 
+      // If a confirm dialog is open, let its own handlers deal with input.
+      // Prevents Enter-on-confirm from also opening augment, etc.
+      if (confirmState.open) return
+
       // Ctrl+Z undo
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         if (!isInput) {
@@ -1698,6 +1734,15 @@ export default function Page() {
         if (!isInput) {
           e.preventDefault()
           setSelectedIds(new Set(blocks.map(b => b.id)))
+          return
+        }
+      }
+
+      // Ctrl/Cmd+C — copy selected blocks as markdown
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        if (!isInput && selectedIds.size > 0) {
+          e.preventDefault()
+          doCopySelection()
           return
         }
       }
@@ -1719,6 +1764,20 @@ export default function Page() {
             setConnections(prev => prev.filter(c => !selectedConnIds.has(c.id)))
             setSelectedConnIds(new Set())
           })
+          return
+        }
+      }
+
+      // L — edit label on single selected connection
+      if (e.key.toLowerCase() === "l" && !isInput && !e.ctrlKey && !e.metaKey) {
+        if (selectedConnIds.size === 1) {
+          e.preventDefault()
+          const id = Array.from(selectedConnIds)[0]
+          const c = connections.find(x => x.id === id)
+          if (c) {
+            setEditingConnId(id)
+            setEditingConnLabel(c.label || "")
+          }
           return
         }
       }
@@ -1747,7 +1806,7 @@ export default function Page() {
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIds, augmentOpen, activeSessionId, editingId, deleteSelected, blocks])
+  }, [selectedIds, selectedConnIds, connections, augmentOpen, activeSessionId, editingId, deleteSelected, blocks, confirmState.open])
 
   // ── Undo ─────────────────────────────────────────────────────────────────
   const doUndo = useCallback(async () => {
@@ -2312,40 +2371,38 @@ export default function Page() {
       showToast("Nothing to export")
       return
     }
-    const scopeIds = new Set(scope.map(b => b.id))
-    const lines: string[] = []
     const session = sessions.find(s => s.id === activeSessionId)
-    lines.push(`# ${session?.name || "nodepad session"}`)
-    lines.push("")
-    for (const b of scope) {
-      const marker = b.is_ai_generated ? " _(AI-generated)_" : ""
-      lines.push(`- ${b.text.replace(/\n/g, "\n  ")}${marker}`)
-    }
-    const scopeConns = connections.filter(
-      c => scopeIds.has(c.from_block_id) && scopeIds.has(c.to_block_id)
-    )
-    if (scopeConns.length > 0) {
-      lines.push("")
-      lines.push("## Connections")
-      lines.push("")
-      for (const c of scopeConns) {
-        const f = blocks.find(b => b.id === c.from_block_id)?.text.slice(0, 40) || c.from_block_id
-        const t = blocks.find(b => b.id === c.to_block_id)?.text.slice(0, 40) || c.to_block_id
-        lines.push(`- ${f} → ${t}`)
-      }
-    }
-    const md = lines.join("\n")
+    const title = session?.name || "nodepad session"
+    const date = new Date().toISOString().slice(0, 10)
+    const md = blocksToMarkdown(scope, connections, { title, date })
     const blob = new Blob([md], { type: "text/markdown" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `nodepad-${session?.name || "export"}-${Date.now()}.md`
+    a.download = `nodepad-${slugForFilename(title)}-${date}.md`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
     showToast("Exported")
   }, [blocks, connections, selectedIds, sessions, activeSessionId, showToast])
+
+  // ── Copy selected blocks to clipboard (Ctrl/Cmd+C) ───────────────────────
+  const doCopySelection = useCallback(async () => {
+    const scope = blocks.filter(b => selectedIds.has(b.id))
+    if (scope.length === 0) return
+    const md = blocksToMarkdown(scope, connections)
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("no clipboard api")
+      }
+      await navigator.clipboard.writeText(md)
+      const n = scope.length
+      showToast(`Copied ${n} block${n === 1 ? "" : "s"}`)
+    } catch {
+      showToast("Copy failed — HTTPS required")
+    }
+  }, [blocks, selectedIds, connections, showToast])
 
   // ── Render ───────────────────────────────────────────────────────────────
   const blocksById = useMemo(() => {
@@ -2410,6 +2467,13 @@ export default function Page() {
             <span className="ml-auto text-[10px] text-white/40">
               {sessions.length} {sessions.length === 1 ? "canvas" : "canvases"}
             </span>
+            <a
+              href="/settings"
+              title="Settings"
+              className="p-1 -my-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-white/5 font-mono text-[11px] leading-none transition-colors"
+            >
+              ⚙
+            </a>
             <button
               data-testid="sidebar-close"
               onClick={() => setSidebarOpen(false)}
@@ -2426,6 +2490,7 @@ export default function Page() {
           <div className="flex-1 overflow-y-auto custom-scrollbar">
             {sessions.map(s => {
               const count = s.block_count ?? 0
+              const isRenaming = renamingSessionId === s.id
               return (
                 <SidebarListItem
                   key={s.id}
@@ -2436,6 +2501,24 @@ export default function Page() {
                   onDelete={() => deleteSession(s.id)}
                   deleteLabel="Delete canvas"
                   label={s.name}
+                  onLabelDoubleClick={() => startRenameSession(s.id, s.name)}
+                  renaming={
+                    isRenaming ? (
+                      <input
+                        autoFocus
+                        data-testid={`session-rename-input-${s.id}`}
+                        value={renamingSessionName}
+                        onChange={e => setRenamingSessionName(e.target.value)}
+                        onBlur={commitRenameSession}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") { e.preventDefault(); commitRenameSession() }
+                          if (e.key === "Escape") { e.preventDefault(); cancelRenameSession() }
+                        }}
+                        onFocus={e => e.currentTarget.select()}
+                        className="w-full rounded-sm border border-primary/50 bg-card/95 backdrop-blur-sm px-2 py-1 text-[13px] font-bold text-foreground outline-none"
+                      />
+                    ) : null
+                  }
                   subtitle={
                     <span className="text-white/55">
                       {count} {count === 1 ? "block" : "blocks"}
@@ -2552,9 +2635,36 @@ export default function Page() {
                 onClick: () => setViewMode(m),
               }))}
             />
-            <div className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 truncate max-w-[120px]">
-              {sessions.find(s => s.id === activeSessionId)?.name || ""}
-            </div>
+            {(() => {
+              const cur = sessions.find(s => s.id === activeSessionId)
+              if (!cur) return <div className="ml-auto" />
+              if (renamingSessionId === cur.id) {
+                return (
+                  <input
+                    autoFocus
+                    data-testid={`session-rename-topbar-${cur.id}`}
+                    value={renamingSessionName}
+                    onChange={e => setRenamingSessionName(e.target.value)}
+                    onBlur={commitRenameSession}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") { e.preventDefault(); commitRenameSession() }
+                      if (e.key === "Escape") { e.preventDefault(); cancelRenameSession() }
+                    }}
+                    onFocus={e => e.currentTarget.select()}
+                    className="ml-auto w-32 rounded-sm border border-primary/50 bg-card/95 backdrop-blur-sm px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-foreground outline-none"
+                  />
+                )
+              }
+              return (
+                <div
+                  onDoubleClick={() => startRenameSession(cur.id, cur.name)}
+                  title="Double-click to rename"
+                  className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 truncate max-w-[120px] cursor-text"
+                >
+                  {cur.name}
+                </div>
+              )
+            })()}
           </div>
         )}
         {/* Content area (views + their overlays) */}
@@ -2696,16 +2806,60 @@ export default function Page() {
                       />
                     </foreignObject>
                   ) : c.label ? (
-                    <text
-                      x={mx} y={my - 6}
-                      textAnchor="middle"
-                      fontSize={10}
-                      fontFamily="var(--font-mono)"
-                      fill={isSel ? "var(--primary)" : "rgba(255,255,255,0.45)"}
-                      style={{ pointerEvents: "none", userSelect: "none" }}
+                    <foreignObject
+                      x={mx - 80}
+                      y={my - 14}
+                      width={160}
+                      height={24}
+                      style={{ overflow: "visible", pointerEvents: isSel ? "auto" : "none" }}
                     >
-                      {c.label}
-                    </text>
+                      <div className="flex w-full justify-center">
+                        <button
+                          data-testid={`conn-label-${c.id}`}
+                          onClick={e => {
+                            e.stopPropagation()
+                            if (!isSel) return
+                            setEditingConnId(c.id)
+                            setEditingConnLabel(c.label || "")
+                          }}
+                          className="font-mono text-[10px] px-1.5 py-0 rounded-sm"
+                          style={{
+                            color: isSel ? "var(--primary)" : "rgba(255,255,255,0.45)",
+                            background: isSel ? "rgba(0,0,0,0.55)" : "transparent",
+                            backdropFilter: isSel ? "blur(4px)" : undefined,
+                            border: isSel ? "1px solid rgba(255,255,255,0.10)" : "none",
+                            cursor: isSel ? "text" : "default",
+                            userSelect: "none",
+                          }}
+                          title={isSel ? "Click to rename · L" : undefined}
+                        >
+                          {c.label}
+                        </button>
+                      </div>
+                    </foreignObject>
+                  ) : isSel ? (
+                    <foreignObject
+                      x={mx - 60}
+                      y={my - 12}
+                      width={120}
+                      height={24}
+                      style={{ overflow: "visible", pointerEvents: "auto" }}
+                    >
+                      <div className="flex w-full justify-center">
+                        <button
+                          data-testid={`conn-label-add-${c.id}`}
+                          onClick={e => {
+                            e.stopPropagation()
+                            setEditingConnId(c.id)
+                            setEditingConnLabel("")
+                          }}
+                          className="font-mono text-[10px] px-2 py-0.5 rounded-sm border border-white/15 bg-card/80 backdrop-blur-sm text-foreground/60 hover:text-foreground hover:bg-card/95 transition-colors"
+                          title="Add label · L"
+                        >
+                          + label
+                        </button>
+                      </div>
+                    </foreignObject>
                   ) : null}
                 </g>
               )

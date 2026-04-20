@@ -32,6 +32,8 @@ export function SidebarListItem({
   active = false,
   onClick,
   onDelete,
+  onLabelDoubleClick,
+  renaming,
   deleteLabel = "Delete",
   testId,
   deleteTestId,
@@ -43,6 +45,10 @@ export function SidebarListItem({
   active?: boolean
   onClick?: () => void
   onDelete?: () => void
+  /** Called when the label is double-clicked (used for inline rename). */
+  onLabelDoubleClick?: () => void
+  /** When provided, replaces the row content with this node (e.g. rename input). */
+  renaming?: ReactNode
   deleteLabel?: string
   testId?: string
   deleteTestId?: string
@@ -55,44 +61,57 @@ export function SidebarListItem({
           : "hover:bg-white/[0.04] border-l-transparent"
       }`}
     >
-      <button
-        data-testid={testId}
-        onClick={onClick}
-        className="w-full text-left px-3 py-2"
-      >
-        <div className="flex items-center gap-2">
-          <span
-            className={`truncate text-[13px] font-bold ${
-              active ? "text-primary" : "text-foreground/85"
-            }`}
-          >
-            {label}
-          </span>
-          {badge && <span className="ml-auto shrink-0">{badge}</span>}
-        </div>
-        {subtitle && (
-          <div className="text-[11px] text-white/45 truncate mt-0.5">
-            {subtitle}
+      {renaming ? (
+        <div className="w-full px-3 py-2">{renaming}</div>
+      ) : (
+        <button
+          data-testid={testId}
+          onClick={onClick}
+          className="w-full text-left px-3 py-2"
+        >
+          <div className="flex items-center gap-2">
+            <span
+              onDoubleClick={
+                onLabelDoubleClick
+                  ? e => {
+                      e.stopPropagation()
+                      e.preventDefault()
+                      onLabelDoubleClick()
+                    }
+                  : undefined
+              }
+              className={`truncate text-[13px] font-bold ${
+                active ? "text-primary" : "text-foreground/85"
+              }`}
+            >
+              {label}
+            </span>
+            {badge && <span className="ml-auto shrink-0">{badge}</span>}
           </div>
-        )}
-        {meta && (
-          <div className="text-[9px] text-white/25 mt-0.5 uppercase tracking-wider">
-            {meta}
-          </div>
-        )}
-      </button>
-      {onDelete && (
+          {subtitle && (
+            <div className="text-[11px] text-white/45 truncate mt-0.5">
+              {subtitle}
+            </div>
+          )}
+          {meta && (
+            <div className="text-[9px] text-white/25 mt-0.5 uppercase tracking-wider">
+              {meta}
+            </div>
+          )}
+        </button>
+      )}
+      {onDelete && !renaming && (
         <button
           data-testid={deleteTestId}
           onClick={e => {
             e.stopPropagation()
             onDelete()
           }}
-          className="absolute right-1.5 top-1.5 opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/20 rounded-sm text-muted-foreground hover:text-destructive transition-all"
+          className="absolute right-1.5 top-1.5 p-1 rounded-sm text-muted-foreground/50 hover:text-destructive hover:bg-destructive/20 opacity-60 group-hover:opacity-100 transition-all"
           title={deleteLabel}
           aria-label={deleteLabel}
         >
-          <span className="text-xs">×</span>
+          <span className="text-xs leading-none">×</span>
         </button>
       )}
     </div>

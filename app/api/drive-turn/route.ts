@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { headers } from "next/headers"
 import { getSettings, getSession, listNotes, listConnections, deleteNote } from "@/lib/server/db"
 import { decrypt, isSensitiveKey } from "@/lib/server/crypto"
+import { callClaudeCode, ClaudeCodeError } from "@/lib/server/claude-subprocess"
 
 // POST /api/drive-turn
 // Body: { transcript: string, session_id: string }
@@ -129,6 +130,26 @@ function summarizeCanvas(notes: any[], connections: any[]): string {
   return lines.join("\n")
 }
 
+async function callCC(
+  model: string,
+  system: string,
+  user: string,
+  jsonOnly: boolean
+): Promise<string> {
+  // Append a JSON-only reminder since Claude Code has no response_format
+  // flag. Prompt engineering is enough — Claude is well-behaved about this.
+  const sys = jsonOnly
+    ? `${system}\n\nIMPORTANT: Respond with a single valid JSON object and nothing else. No markdown fences, no prose, no preamble.`
+    : system
+  const res = await callClaudeCode({
+    prompt: user,
+    systemPrompt: sys,
+    model,
+    timeoutMs: 60_000, // drive is latency-sensitive; 60s hard cap
+  })
+  return res.text.trim()
+}
+
 async function callOR(
   apiKey: string,
   baseUrl: string,
@@ -250,11 +271,17 @@ export async function POST(req: Request) {
       settings.customBaseUrl ||
       (provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1")
 
-    if (!apiKey) {
+    // ── driveBackend === "claude-code" short-circuit ──────────────────────
+    // Route both classifier + responder through `claude -p` subprocess.
+    // Bypasses the OpenRouter apiKey requirement (CC uses CLI auth).
+    const useClaudeCode = settings.driveBackend === "claude-code"
+    const ccModel = settings.claudeCodeModel || "claude-opus-4-7"
+
+    if (!apiKey && !useClaudeCode) {
       return NextResponse.json({
         action: "silent",
         reason: "no api key",
-        text: "Voice mode needs an OpenRouter API key in settings.",
+        text: "Voice mode needs an OpenRouter API key (or switch to Claude Code / Qwen in settings).",
         models: { classifier: "none", responder: "none" },
         elapsed_ms: Date.now() - t0,
       })
@@ -266,7 +293,9 @@ export async function POST(req: Request) {
       `Current canvas (${notes.length} block${notes.length === 1 ? "" : "s"}):\n${canvasSummary}`
     let classification: Classification
     try {
-      const raw = await callOR(apiKey, baseUrl, FAST_MODEL, CLASSIFIER_SYSTEM_PROMPT, classifyUser, true, 200)
+      const raw = useClaudeCode
+        ? await callCC(ccModel, CLASSIFIER_SYSTEM_PROMPT, classifyUser, true)
+        : await callOR(apiKey, baseUrl, FAST_MODEL, CLASSIFIER_SYSTEM_PROMPT, classifyUser, true, 200)
       classification = classifyIntent(raw)
     } catch (e: any) {
       console.warn("[drive-turn] classify failed:", e?.message)
@@ -409,7 +438,9 @@ export async function POST(req: Request) {
 
     let text = ""
     try {
-      const respRaw = await callOR(apiKey, baseUrl, FAST_MODEL, RESPONDER_SYSTEM_PROMPT, responderUser, false, 120)
+      const respRaw = useClaudeCode
+        ? await callCC(ccModel, RESPONDER_SYSTEM_PROMPT, responderUser, false)
+        : await callOR(apiKey, baseUrl, FAST_MODEL, RESPONDER_SYSTEM_PROMPT, responderUser, false, 120)
       text = respRaw
         .replace(/^["'`]+|["'`]+$/g, "")
         .replace(/^[*_-]\s+/gm, "")
@@ -442,7 +473,9 @@ export async function POST(req: Request) {
       augment_full: augmentRes, // so client can extract snapshot for undo
       delete_snapshot: deleteSnapshot, // for client undo of delete actions
       deleted_count: deletedCount,
-      models: { classifier: FAST_MODEL, responder: FAST_MODEL },
+      models: useClaudeCode
+        ? { classifier: `claude-code/${ccModel}`, responder: `claude-code/${ccModel}` }
+        : { classifier: FAST_MODEL, responder: FAST_MODEL },
       elapsed_ms: Date.now() - t0,
     })
   } catch (e: any) {

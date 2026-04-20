@@ -12,6 +12,7 @@ import {
 } from "@/lib/server/db"
 import { decrypt, isSensitiveKey } from "@/lib/server/crypto"
 import { recordCall } from "@/lib/server/ai-log"
+import { callClaudeCode, ClaudeCodeError } from "@/lib/server/claude-subprocess"
 
 // Stringify a fetch body's `messages` array into a flat preview string so the
 // AI-log panel can show what was actually sent. Image data URLs are stripped
@@ -102,6 +103,46 @@ const REARRANGE_DEFAULT_MODEL = "google/gemini-3-flash"
 // is the one job we've confirmed Gemini 3 Flash does well and Qwen is untested.
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://100.95.37.85:11434"
 const OLLAMA_AUGMENT_MODEL = process.env.OLLAMA_AUGMENT_MODEL || "qwen3.6:35b-a3b-q4_K_M"
+
+// ── Claude Code (CLI subprocess) backend ───────────────────────────────────
+// Used when settings.augmentBackend === "claude-code". Stateless `claude -p`
+// call — no session persistence, no Matrix streaming. Bypasses both OpenRouter
+// billing and self-hosted Qwen; piggybacks on the CC subscription.
+async function claudeChatPlain(opts: {
+  label: string
+  systemPrompt: string
+  userPrompt: string
+  model: string
+  timeoutMs?: number
+}): Promise<string> {
+  const t0 = Date.now()
+  let content = ""
+  let errorMsg: string | undefined
+  try {
+    const res = await callClaudeCode({
+      prompt: opts.userPrompt,
+      systemPrompt: opts.systemPrompt,
+      model: opts.model,
+      timeoutMs: opts.timeoutMs,
+    })
+    content = res.text
+  } catch (e: any) {
+    errorMsg = e instanceof ClaudeCodeError ? e.message : (e?.message || String(e))
+    throw e
+  } finally {
+    recordCall({
+      label: opts.label,
+      model: `claude-code/${opts.model}`,
+      system_prompt: opts.systemPrompt,
+      user_content: `[user]\n${opts.userPrompt}`,
+      response_text: content || (errorMsg || ""),
+      response_status: errorMsg ? 500 : 200,
+      latency_ms: Date.now() - t0,
+      error: errorMsg,
+    })
+  }
+  return content.trim()
+}
 
 async function ollamaChatPlain(opts: {
   label: string
@@ -265,6 +306,17 @@ Return ONLY valid JSON. No markdown fences, no prose, no commentary. The exact s
       jsonMode: true,
       temperature: 0.3,
       numPredict: 4096, // structured graphs can be long
+    })
+  } else if (settings.augmentBackend === "claude-code" && !hasImages) {
+    // Claude Code subprocess. Vision falls through to OpenRouter path below
+    // because `claude -p` image support requires a tempfile dance we haven't
+    // plumbed yet.
+    const ccModel = settings.claudeCodeModel || "claude-opus-4-7"
+    content = await claudeChatPlain({
+      label: "augment.structured.claude-code",
+      systemPrompt,
+      userPrompt,
+      model: ccModel,
     })
   } else {
     const provider = settings.provider || "openrouter"
@@ -668,6 +720,17 @@ Rules:
       userPrompt,
       temperature: 0.4,
       numPredict: 1024,
+    })
+  }
+
+  // Claude Code subprocess path. Images fall through to OpenRouter.
+  if (settings.augmentBackend === "claude-code" && !hasImages) {
+    const ccModel = settings.claudeCodeModel || "claude-opus-4-7"
+    return claudeChatPlain({
+      label: "augment.default.claude-code",
+      systemPrompt,
+      userPrompt,
+      model: ccModel,
     })
   }
 
